@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import struct
 import sys
+import tempfile
 
 import numpy as np
 from mcp import ClientSession, StdioServerParameters
@@ -82,18 +83,21 @@ def test_mcp_handshake_lists_tools_and_reports_missing_device() -> None:
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "droidpilot"],
-            env={"DROIDPILOT_SERIAL": "no-such-device", "PATH": "/usr/bin:/bin"},
+            env={"DROIDPILOT_SERIAL": "no-such-device", "DROIDPILOT_HOME": tempfile.mkdtemp(), "PATH": "/usr/bin:/bin"},
         )
         async with stdio_client(params) as (r, w):
             async with ClientSession(r, w) as session:
                 await session.initialize()
                 tools = await session.list_tools()
                 res = await session.call_tool("device_status", {})
-                return {t.name for t in tools.tools}, res.content[0].text  # type: ignore[union-attr]
+                obs = await session.call_tool("observe", {})  # error path must be text, not a schema failure
+                return {t.name for t in tools.tools}, res.content[0].text + "||" + obs.content[0].text  # type: ignore[union-attr]
 
     names, text = asyncio.run(run())
     assert {"observe", "tap", "tap_element", "swipe", "scroll", "pinch", "gesture", "type_text", "press_key", "open_app"} <= names
-    assert text.startswith("ERROR:")
+    status, observed = text.split("||")
+    assert status.startswith("ERROR:") and observed.startswith("ERROR:")
+    assert {"tap_text", "wait_for"} <= names and "ui_tree" not in names
 
 
 def _el(i, cls, text, flags, b):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from . import store
 from .adb import Adb, DeviceError, find_adb, list_devices
 from .scrcpy import REMOTE_JAR
 
@@ -36,10 +37,9 @@ def clean_device(adb: Adb) -> list[str]:
 
 def clean_host() -> list[str]:
     done: list[str] = []
-    for f in list(Path("/tmp").glob("droidpilot-*")) + [Path("/tmp/dp_last.json")]:
-        if f.exists():
-            f.unlink()
-            done.append(f"removed {f}")
+    n = store.clear("traces")  # run logs only. knowledge/ (notes, recipes) is never touched
+    if n:
+        done.append(f"removed {n} trace file(s) from {store.ROOT / 'traces'}")
     return done
 
 

@@ -17,15 +17,19 @@ droidpilot is an [MCP](https://modelcontextprotocol.io) server. Any agent that s
 
 | Action | Tool |
 |---|---|
-| Look at the screen | `observe`, `screenshot`, `ui_tree` |
-| Touch | `tap`, `tap_element`, `double_tap`, `long_press` |
+| Look at the screen | `observe` (UI list, snapshot id, state), `screenshot` |
+| Touch | `tap_text`, `tap_element`, `tap`, `double_tap`, `long_press` |
 | Move a finger | `swipe`, `scroll` |
 | Use two or more fingers | `pinch`, `gesture` |
 | Type and press keys | `type_text`, `press_key` |
 | Open an app | `open_app`, `list_apps` |
-| Wait for the screen | `wait` |
+| Wait | `wait`, `wait_for` |
 
-Each action tells the agent if the screen changed (`screen_changed=yes` or `NO`). The agent can then find a failed tap.
+An action returns in about 0.4 seconds. It does not check the screen. The next `observe` says `changed=yes` or `changed=NO`. The agent can then find a tap that did nothing.
+
+`observe` also wakes and unlocks a phone that has no PIN. If a PIN blocks it, the result starts with `NEEDS_HUMAN`.
+
+A tap on a buy, pay, send or delete button returns `BLOCKED`. The agent must repeat it with `confirm=true`.
 
 ## How it works
 
@@ -67,6 +71,17 @@ uv --directory /path/to/droidpilot run droidpilot serve
 
 An example config is in [`examples/mcp.example.json`](examples/mcp.example.json).
 
+## Settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DROIDPILOT_VERIFY` | `off` | `full` checks the screen after each action with screenshots. It is slow (about 5 seconds). |
+| `DROIDPILOT_SETTLE_MS` | `400` | Wait after each action. |
+| `DROIDPILOT_GUARD` | `on` | `off` turns the safety guard off. |
+| `DROIDPILOT_COMPACT` | `1` | `0` lists every UI element. |
+| `DROIDPILOT_SERIAL` | first device | Choose a phone when more than one is connected. |
+| `DROIDPILOT_HOME` | `~/.cache/droidpilot` | Where the run log is kept. |
+
 ## Commands
 
 | Command | Use |
@@ -84,14 +99,16 @@ uv run python tests/e2e_device.py   # needs a phone or an emulator
 
 ## Known limits
 
-- Each checked action takes about 5 seconds. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+- `observe` takes about 3 seconds. The UI dump on the phone is the limit. See [docs/ROADMAP.md](docs/ROADMAP.md).
 - Apps that block screenshots show a black screen. The UI tree can still work.
 - Web views inside apps give only part of their UI to the tree.
 - A phone without a PIN is easy to use. A phone with a PIN needs the user to unlock it.
 
 ## Documents
 
-- [Performance and improvement plan](docs/PERFORMANCE.md)
+- [Roadmap: effort, impact, and what we dropped](docs/ROADMAP.md)
+- [Performance numbers](docs/PERFORMANCE.md)
+- [Security](SECURITY.md)
 - [Research summary](docs/RESEARCH.md)
 - [Findings log](docs/FINDINGS.md)
 

@@ -1,17 +1,22 @@
-"""High-level phone controller: gestures, text, keys, apps, observe/verify."""
+"""High-level phone controller: state, observe, gestures, text, keys, apps.
+
+Imperative shell. The decisions live in pure modules: snapshot, guard, state, perception.
+"""
 
 from __future__ import annotations
 
 import os
-import re
 import time
 from dataclasses import dataclass
 
 from PIL import Image
 
+from . import guard as G
 from . import perception as P
 from . import scrcpy as S
-from .adb import Adb, DeviceError, list_devices
+from . import snapshot as SN
+from . import state as ST
+from .adb import Adb, Blocked, DeviceError, NeedsHuman, list_devices
 
 KEYCODES = {
     "home": 3, "back": 4, "call": 5, "endcall": 6, "volume_up": 24, "volume_down": 25,
@@ -23,22 +28,24 @@ KEYCODES = {
 }
 
 COMPACT = os.environ.get("DROIDPILOT_COMPACT", "1") != "0"  # merge card children into one line
+VERIFY = os.environ.get("DROIDPILOT_VERIFY", "off")  # off: fixed wait | full: screenshot diff loop
+SETTLE_MS = int(os.environ.get("DROIDPILOT_SETTLE_MS", "400"))
 FRAME_MS = 16  # ~60 Hz touch sampling
+READY_TTL = 15.0  # seconds before the wake/lock check runs again
+SNAPSHOT_TTL = 3.0  # seconds a snapshot may be reused by tap_text
+GUARD_TTL = 30.0  # seconds a snapshot may be used to name the element under a raw tap
 
 
 @dataclass
 class Outcome:
     message: str
-    changed: bool | None = None
+    changed: bool | None = None  # None means not verified
     settled_ms: int | None = None
 
     def __str__(self) -> str:
-        parts = [self.message]
-        if self.changed is not None:
-            parts.append(f"screen_changed={'yes' if self.changed else 'NO'}")
-        if self.settled_ms is not None:
-            parts.append(f"settled_after={self.settled_ms}ms")
-        return "; ".join(parts)
+        if self.changed is None:
+            return f"{self.message}; not verified (waited {self.settled_ms}ms). observe reports changed=yes/NO"
+        return f"{self.message}; screen_changed={'yes' if self.changed else 'NO'}; settled_after={self.settled_ms}ms"
 
 
 class Phone:
@@ -48,8 +55,13 @@ class Phone:
         self.adb: Adb | None = None
         self.control: S.ScrcpyControl | None = None
         self.geo: P.Geometry | None = None
+        self.snapshot: SN.Snapshot | None = None
         self.elements: list[P.UiElement] = []
         self.input_backend = "unconnected"
+        self.backend_note = ""
+        self._snap_time = 0.0
+        self._state: ST.DeviceState | None = None
+        self._ready_at = 0.0
 
     # ---- connection -------------------------------------------------------
     def connect(self) -> Adb:
@@ -94,32 +106,44 @@ class Phone:
             self.backend_note = f"scrcpy unavailable ({exc}); using adb input fallback (no multi-touch)"
             return None
 
-    backend_note = ""
+    # ---- device state -----------------------------------------------------
+    def state(self) -> ST.DeviceState:
+        st = ST.parse(self.connect().shell(ST.PROBE, timeout=20))
+        if st.size:
+            self.geo = P.Geometry(st.size[0], st.size[1], self.view_long_side)
+        self._state = st
+        return st
 
-    # ---- perception -------------------------------------------------------
-    def grab(self) -> Image.Image:
-        img = P.capture(self.connect())
-        self.geo = P.Geometry(img.width, img.height, self.view_long_side)
-        return img
+    def _ready(self, fresh: bool = False) -> ST.DeviceState:
+        """Make sure the phone is awake and unlocked. Raise NeedsHuman if a PIN blocks it."""
+        if not fresh and self._state and time.monotonic() - self._ready_at < READY_TTL:
+            return self._state
+        st = self.state()
+        if not st.awake or st.locked:
+            st = self._wake(st)
+        self._state, self._ready_at = st, time.monotonic()
+        return st
 
-    def screenshot_jpeg(self) -> bytes:
-        img = self.grab()
-        assert self.geo
-        return P.to_view_jpeg(img, self.geo)
-
-    def refresh_ui(self) -> str:
+    def _wake(self, st: ST.DeviceState) -> ST.DeviceState:
         adb = self.connect()
-        if not self.geo:
-            self.grab()
-        assert self.geo
-        full = P.dump_ui(adb)
-        self.elements = P.compact(full, self.geo.width, self.geo.height) if COMPACT else full
-        return P.format_ui(self.elements, self.geo)
+        if not st.awake:
+            adb.shell("input keyevent 224")
+            time.sleep(0.6)
+            st = self.state()
+        if st.locked and self.geo:
+            w, h = self.geo.view_size
+            self._perform([[(w / 2, 0.85 * h), (w / 2, 0.25 * h)]], 250)  # swipe up: dismisses a plain lock screen
+            time.sleep(0.8)
+            st = self.state()
+        if not st.awake or st.locked:
+            raise NeedsHuman(
+                "The phone is locked (PIN, pattern, password or biometric). Ask the user to unlock it, then retry."
+            )
+        return st
 
     def status(self) -> dict[str, object]:
         adb = self.connect()
-        img = self.grab()
-        assert self.geo
+        st = self._ready(fresh=True)
         ctl = self._control()
         props = {
             k: adb.shell(f"getprop {p}").strip()
@@ -128,22 +152,67 @@ class Phone:
         return {
             "serial": adb.serial,
             **props,
-            "device_px": [img.width, img.height],
-            "view_px": list(self.geo.view_size),
+            "device_px": list(st.size) if st.size else None,
+            "view_px": list(self.geo.view_size) if self.geo else None,
+            "rotation": st.rotation,
             "input_backend": self.input_backend,
             "multi_touch": ctl is not None,
             "note": self.backend_note,
-            "current_app": self.current_app(),
+            "current_app": st.app,
         }
 
     def current_app(self) -> str:
-        out = self.connect().shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'", timeout=15)
-        m = re.search(r"([\w.]+)/([\w.$]+)", out)
-        return f"{m.group(1)}/{m.group(2)}" if m else "unknown"
+        return self.state().app or "unknown"
 
-    # ---- verification -----------------------------------------------------
+    # ---- perception -------------------------------------------------------
+    def grab(self) -> Image.Image:
+        img = P.capture(self.connect())
+        self.geo = P.Geometry(img.width, img.height, self.view_long_side)
+        return img
+
+    def screenshot_jpeg(self) -> bytes:
+        self._ready()
+        img = self.grab()
+        assert self.geo
+        return P.to_view_jpeg(img, self.geo)
+
+    def observe(self, diff_only: bool = False) -> str:
+        """Dump the UI, make a snapshot, and report what changed since the previous one."""
+        st = self._ready(fresh=True)
+        assert self.geo
+        full = P.dump_ui(self.connect())
+        els = P.compact(full, self.geo.width, self.geo.height) if COMPACT else full
+        prev = self.snapshot
+        snap = SN.Snapshot((prev.id + 1) if prev else 1, st.app, tuple(els), SN.digest(els))
+        d = SN.diff(prev, snap) if prev else None
+        self.snapshot, self._snap_time, self.elements = snap, time.monotonic(), list(els)
+
+        w, h = self.geo.view_size
+        head = f"snapshot={snap.id} screen={w}x{h} {st.banner()}"
+        if d is None:
+            head += "\nchanged=first observe"
+        elif not d.changed:
+            head += "\nchanged=NO (same screen as the previous snapshot)"
+        else:
+            head += f"\nchanged=yes (+{len(d.added)} new labels, -{len(d.removed)} gone)"
+        if diff_only and d and d.changed and prev and prev.app == snap.app:
+            body = P.format_ui(list(d.added), self.geo)
+            if d.removed:
+                body += "\ngone: " + "; ".join(r[:40] for r in d.removed[:12])
+            return head + "\n(showing only new elements; indices still valid for tap_element)\n" + body
+        return head + "\n" + P.format_ui(els, self.geo)
+
+    def refresh_ui(self) -> str:
+        return self.observe()
+
+    # ---- action wrapper ---------------------------------------------------
     def _acting(self, label: str, fn) -> Outcome:
-        """Run `fn` (which injects input), then report whether the screen changed and settled."""
+        """Run `fn` (injects input). Default: fixed short wait. DROIDPILOT_VERIFY=full: screenshot diff loop."""
+        self._ready()
+        if VERIFY != "full":
+            fn()
+            time.sleep(SETTLE_MS / 1000)
+            return Outcome(label, None, SETTLE_MS)
         before = P.signature(self.grab())
         fn()
         start = time.monotonic()
@@ -164,6 +233,7 @@ class Phone:
         return Outcome(label, changed, int((time.monotonic() - start) * 1000))
 
     def wait_settled(self, max_ms: int = 4000) -> Outcome:
+        self._ready()
         start = time.monotonic()
         prev = P.signature(self.grab())
         stable = 0
@@ -172,7 +242,19 @@ class Phone:
             cur = P.signature(self.grab())
             stable = stable + 1 if P.diff(prev, cur) <= 0.5 else 0
             prev = cur
-        return Outcome("wait complete", None, int((time.monotonic() - start) * 1000))
+        return Outcome("wait complete", True, int((time.monotonic() - start) * 1000))
+
+    def wait_for(self, text: str, timeout_ms: int = 5000) -> str:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            self.observe()
+            assert self.snapshot
+            hits = SN.find(self.snapshot, text)
+            if hits:
+                return f"found {text!r}: [{hits[0].index}] {SN.label(hits[0])[:60]!r} (snapshot={self.snapshot.id})"
+            if time.monotonic() >= deadline:
+                return f"NOT FOUND after {timeout_ms}ms: {text!r}"
+            time.sleep(0.3)
 
     # ---- gestures ---------------------------------------------------------
     def _perform(self, paths: list[list[tuple[float, float]]], duration_ms: int) -> None:
@@ -223,8 +305,49 @@ class Phone:
         else:
             adb.shell(f"input swipe {x0} {y0} {x1} {y1} {duration_ms}")
 
-    def tap(self, x: float, y: float) -> Outcome:
+    def _check_guard(self, x: float, y: float, confirm: bool) -> None:
+        """Refuse a tap on a buy/pay/send/delete element unless confirm=True."""
+        snap = self.snapshot
+        if confirm or not snap or not self.geo or time.monotonic() - self._snap_time > GUARD_TTL:
+            return
+        el = SN.element_at(snap, *self.geo.to_device(x, y))
+        hit = G.check(SN.label(el)) if el else None
+        if hit:
+            raise Blocked(
+                f"This tap is on {SN.label(el)[:60]!r}, which looks like a purchase, payment, send or delete "
+                f"(matched {hit!r}). Repeat the call with confirm=true only if the user asked for it."
+            )
+
+    def tap(self, x: float, y: float, confirm: bool = False) -> Outcome:
+        self._ready()
+        self._check_guard(x, y, confirm)
         return self._acting(f"tapped ({x:.0f},{y:.0f})", lambda: self._perform([[(x, y)]], 60))
+
+    def tap_element(self, index: int, snapshot_id: int | None = None, confirm: bool = False) -> Outcome:
+        snap = self.snapshot
+        if snap is None:
+            raise DeviceError("No snapshot yet. Call observe first.")
+        if snapshot_id is not None and snapshot_id != snap.id:
+            raise DeviceError(f"Snapshot {snapshot_id} is old (current is {snap.id}). Call observe again.")
+        if not 0 <= index < len(snap.elements):
+            raise DeviceError(f"No element [{index}] in snapshot {snap.id}. Call observe again.")
+        now = self._ready(fresh=True)
+        if snap.app and now.app and now.app != snap.app:
+            raise DeviceError(f"The foreground app changed ({snap.app} -> {now.app}) since snapshot {snap.id}. Call observe again.")
+        assert self.geo
+        x, y = self.geo.to_view(*snap.elements[index].center)
+        return self.tap(x, y, confirm)
+
+    def tap_text(self, text: str, nth: int = 0, confirm: bool = False) -> Outcome:
+        if not self.snapshot or time.monotonic() - self._snap_time > SNAPSHOT_TTL:
+            self.observe()
+        assert self.snapshot and self.geo
+        hits = SN.find(self.snapshot, text)
+        if not 0 <= nth < len(hits):
+            seen = [SN.label(e)[:30] for e in self.snapshot.elements if SN.label(e)][:15]
+            raise DeviceError(f"No element matching {text!r} (match #{nth}). Visible labels: {seen}")
+        x, y = self.geo.to_view(*hits[nth].center)
+        return self.tap(x, y, confirm)
 
     def double_tap(self, x: float, y: float) -> Outcome:
         def run() -> None:
@@ -245,8 +368,7 @@ class Phone:
 
     def scroll(self, direction: str, amount: float = 0.5, duration_ms: int = 350) -> Outcome:
         """Reveal content in `direction` (down = see content below = finger moves up)."""
-        if not self.geo:
-            self.grab()
+        self._ready()
         assert self.geo
         w, h = self.geo.view_size
         cx, cy = w / 2, h / 2
@@ -258,12 +380,11 @@ class Phone:
 
     def pinch(self, x: float, y: float, scale: float, duration_ms: int = 400) -> Outcome:
         """scale > 1 zooms in (fingers spread), < 1 zooms out."""
-        if not self.geo:
-            self.grab()
+        self._ready()
         assert self.geo
         w, h = self.geo.view_size
         base = 0.15 * min(w, h)
-        start_d, end_d = (base, base * scale) if scale >= 1 else (base * 1.0, base * scale)
+        start_d, end_d = base, base * scale
         if scale >= 1:
             end_d = min(end_d, 0.45 * w)
         paths = [

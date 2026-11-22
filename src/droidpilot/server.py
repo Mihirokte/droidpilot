@@ -3,97 +3,114 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import subprocess
+import time
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP, Image
 from pydantic import Field
 
-from .adb import DeviceError
+from .adb import Blocked, DeviceError, NeedsHuman
 from .phone import Phone
+from .trace import Trace
 
 INSTRUCTIONS = """\
-Controls a real Android phone through touch, exactly like a finger.
-Loop: call `observe`, pick ONE action, act, read the result line, repeat.
-- All coordinates are in screenshot space (the image `observe`/`screenshot` returns).
-- Prefer `tap_element(index)` from the last `observe`/`ui_tree` output; use raw `tap(x, y)` when the
-  element list is empty or wrong (games, WebViews, canvas UIs).
-- Every action reports `screen_changed=yes/NO`. If NO, the action had no visible effect: do not repeat
-  it blindly. Re-observe and try a different approach.
-- Use `scroll` to find off-screen content, `pinch` to zoom, `gesture` for custom multi-finger input.
+Controls a real Android phone through touch, like a finger.
+Loop: `observe`, choose ONE action, act, `observe` again.
+- `observe` returns numbered elements and a `snapshot` id. It also says if the screen changed since the last one.
+- Prefer `tap_text("Add to cart")` or `tap_element(index, snapshot)`. Use raw `tap(x, y)` only when the list is empty (games, web views).
+- Coordinates are in screenshot space. Ask for the image only when the list is not enough: `observe(image=true)`.
+- Actions do not check the screen. Call `observe` to see the result. `changed=NO` means the action did nothing.
+- A result that starts with BLOCKED means the safety guard stopped a buy/pay/send/delete tap. Repeat with confirm=true only if the user asked.
+- A result that starts with NEEDS_HUMAN means stop and ask the user (lock screen PIN, CAPTCHA, OTP).
 """
 
 mcp = FastMCP("droidpilot", instructions=INSTRUCTIONS)
 _phone = Phone()
+_trace = Trace()
 
 X = Annotated[float, Field(description="x in screenshot space")]
 Y = Annotated[float, Field(description="y in screenshot space")]
-
-
-def _guard(fn):
-    """Return device errors as tool text instead of crashing the server."""
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
-        except DeviceError as exc:
-            return f"ERROR: {exc}"
-        except subprocess.TimeoutExpired as exc:
-            return f"ERROR: adb command timed out after {exc.timeout}s (phone locked, asleep, or adb stuck?)"
-
-    return wrapper
+Confirm = Annotated[bool, Field(description="true only if the user asked for this buy/pay/send/delete action")]
 
 
 def tool(fn):
-    return mcp.tool()(_guard(fn))
+    """Register `fn` as an MCP tool. Turn device errors into text. Log name, args, time and status."""
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        status = "ok"
+        try:
+            result = fn(*args, **kwargs)
+        except NeedsHuman as exc:
+            status, result = "needs_human", f"NEEDS_HUMAN: {exc}"
+        except Blocked as exc:
+            status, result = "blocked", f"BLOCKED: {exc}"
+        except DeviceError as exc:
+            status, result = "error", f"ERROR: {exc}"
+        except subprocess.TimeoutExpired as exc:
+            status, result = "error", f"ERROR: adb command timed out after {exc.timeout}s (phone locked, asleep, or adb stuck?)"
+        try:
+            bound = sig.bind_partial(*args, **kwargs).arguments
+            size = len(result) if isinstance(result, str) else sum(len(p) for p in result if isinstance(p, str))
+            _trace.log(fn.__name__, bound, (time.perf_counter() - start) * 1000, status, size)
+        except OSError:
+            pass  # a full disk must never break a tool call
+        return result
+
+    return mcp.tool()(wrapper)
 
 
 @tool
 def device_status() -> str:
-    """Show the connected phone, screen size, input backend (scrcpy multi-touch or adb fallback) and foreground app."""
+    """Show the phone, screen size, rotation, input backend (scrcpy multi-touch or adb fallback) and foreground app."""
     return json.dumps(_phone.status(), indent=2)
 
 
 @tool
-def observe() -> list:
-    """Screenshot plus numbered list of tappable/readable UI elements. Call this before deciding what to do."""
-    tree = _phone.refresh_ui()  # first, so geometry is fresh
-    jpeg = _phone.screenshot_jpeg()
-    w, h = _phone.geo.view_size
-    header = f"screen {w}x{h} (coordinate space for all tools); app={_phone.current_app()}\n"
-    return [header + tree, Image(data=jpeg, format="jpeg")]
+def observe(
+    image: Annotated[bool, Field(description="also return a screenshot")] = False,
+    diff_only: Annotated[bool, Field(description="list only elements that are new since the last observe")] = False,
+):
+    """Numbered UI elements, a snapshot id, app/rotation/keyboard state and whether the screen changed. Call before acting."""
+    text = _phone.observe(diff_only)
+    return [text, Image(data=_phone.screenshot_jpeg(), format="jpeg")] if image else [text]
 
 
 @tool
-def screenshot() -> Image:
-    """Screenshot only (fast, no UI tree)."""
+def screenshot():
+    """Screenshot only, without the element list."""
     return Image(data=_phone.screenshot_jpeg(), format="jpeg")
 
 
 @tool
-def ui_tree() -> str:
-    """Numbered UI elements from the accessibility hierarchy, with centers and flags (click, scroll, edit...)."""
-    _phone.grab()
-    return _phone.refresh_ui()
+def tap_text(
+    text: Annotated[str, Field(description="visible label to tap, case-insensitive, partial match")],
+    nth: Annotated[int, Field(description="which match to tap when several, starting at 0")] = 0,
+    confirm: Confirm = False,
+) -> str:
+    """Tap the element whose label contains `text`. One call instead of observe, read index, tap."""
+    return str(_phone.tap_text(text, nth, confirm))
 
 
 @tool
-def tap(x: X, y: Y) -> str:
+def tap_element(
+    index: Annotated[int, Field(description="[n] index from the latest observe")],
+    snapshot: Annotated[int | None, Field(description="snapshot id from that observe. Rejects the tap if the screen was re-read since")] = None,
+    confirm: Confirm = False,
+) -> str:
+    """Tap the center of an element from the latest observe."""
+    return str(_phone.tap_element(index, snapshot, confirm))
+
+
+@tool
+def tap(x: X, y: Y, confirm: Confirm = False) -> str:
     """Single tap at a point."""
-    return str(_phone.tap(x, y))
-
-
-@tool
-def tap_element(index: Annotated[int, Field(description="[n] index from the latest observe/ui_tree")]) -> str:
-    """Tap the center of a UI element listed by the most recent observe/ui_tree call."""
-    if not 0 <= index < len(_phone.elements):
-        return "ERROR: no such element; call observe first (the screen may have changed)"
-    assert _phone.geo
-    el = _phone.elements[index]
-    x, y = _phone.geo.to_view(*el.center)
-    return str(_phone.tap(x, y))
+    return str(_phone.tap(x, y, confirm))
 
 
 @tool
@@ -168,6 +185,15 @@ def list_apps(include_system: bool = False) -> str:
 def wait(ms: Annotated[int, Field(description="max wait, 100-10000")] = 1500) -> str:
     """Wait until the screen stops changing (loading spinners, animations)."""
     return str(_phone.wait_settled(max(100, min(ms, 10000))))
+
+
+@tool
+def wait_for(
+    text: Annotated[str, Field(description="label to wait for")],
+    timeout_ms: Annotated[int, Field(description="1000-30000")] = 5000,
+) -> str:
+    """Wait until an element with this label appears."""
+    return _phone.wait_for(text, max(1000, min(timeout_ms, 30000)))
 
 
 def run() -> None:
