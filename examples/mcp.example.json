@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "droidpilot": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/droidpilot", "run", "droidpilot", "serve"]
+    }
+  }
+}

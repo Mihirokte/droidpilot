@@ -1,0 +1,23 @@
+[project]
+name = "droidpilot"
+version = "0.1.0"
+description = "Full-touch Android control for AI agents over MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.2,<2",
+    "numpy>=2.5.5",
+    "pillow>=13.0.0",
+]
+
+[project.scripts]
+droidpilot = "droidpilot:main"
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
