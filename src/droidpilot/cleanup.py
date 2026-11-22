@@ -19,8 +19,11 @@ def _size(path: Path) -> int:
 
 def clean_device(adb: Adb) -> list[str]:
     done: list[str] = []
-    adb.shell("pkill -f com.genymobile.scrcpy.Server || true")  # stale servers hold memory
-    done.append("stopped stale scrcpy servers on phone")
+    try:  # pkill may be missing or find nothing; neither is an error
+        adb.shell("pkill -f com.genymobile.scrcpy.Server")
+        done.append("stopped stale scrcpy servers on phone")
+    except DeviceError:
+        pass
     adb.shell(f"rm -f {REMOTE_JAR}")
     done.append(f"removed {REMOTE_JAR} from phone")
     for line in adb.run("forward", "--list").splitlines():
