@@ -29,8 +29,8 @@ def doctor() -> int:
     phone = Phone()
     try:
         print(json.dumps(phone.status(), indent=2))
-        n = len(phone.elements) or phone.refresh_ui().count("\n") + 1
-        line(True, f"ui tree readable ({n} lines)")
+        phone.observe()
+        line(True, f"ui tree readable ({len(phone.elements)} elements, backend={phone.tree_backend})")
         out = phone.press_key("home")
         line(True, f"home key: {out}")
         out = phone.scroll("down", 0.3)

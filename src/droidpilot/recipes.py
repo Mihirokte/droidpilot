@@ -94,7 +94,7 @@ def compile_steps(calls: list[tuple[str, dict]], params: dict[str, str]) -> list
             step[key] = val
         if tool == "type_text" and not _PLACEHOLDER.search(step.get("text", "")):
             typed += 1
-            step["text"] = "{text_%d}" % typed
+            step["text"] = f"{{text_{typed}}}"
         steps.append(step)
     return steps
 

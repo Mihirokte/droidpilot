@@ -91,6 +91,17 @@ async def main() -> int:
         check("notes: saved" in out2, "observe hints that notes exist")
         out = await call("open_url", url="file:///etc/passwd")
         check(out.startswith("ERROR"), "open_url refuses file links")
+        # Chrome through DevTools
+        await call("open_url", url="https://example.com", package="com.android.chrome")
+        out = await call("wait_for", text="Example Domain", timeout_ms=10000)
+        out = await call("web_read")
+        check("title: Example Domain" in out and "Learn more" in out, "web_read reads the Chrome page")
+        out = await call("web_click", text="Learn more")
+        check(out.startswith("clicked"), "web_click clicks a link")
+        out = await call("web_click", text="Buy now")
+        check(out.startswith("BLOCKED"), "web_click guard blocks buy")
+        out = await call("look", question="What is on screen?")
+        check(out.startswith(("ERROR", "NEEDS_HUMAN")) or "[via" in out, "look answers or explains the missing backend")
         await call("press_key", key="home")
     print("\nFAILED: " + "; ".join(failures) if failures else "\nALL PASSED")
     return 1 if failures else 0

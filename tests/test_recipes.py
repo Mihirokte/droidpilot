@@ -59,7 +59,7 @@ def test_compile_replaces_param_values_and_never_stores_typed_literals() -> None
     steps = R.compile_steps(calls, {"query": "black jeans", "brand": "339433"})
     blob = json.dumps(steps)
     assert "hunter2" not in blob and "black jeans" not in blob and "339433" not in blob
-    assert steps[0]["url"] == "https://x.in/s?k=black+jeans&rh=p_123%3A339433".replace("black+jeans", "black+jeans").replace("339433", "{brand}")
+    assert steps[0]["url"] == "https://x.in/s?k=black+jeans&rh=p_123%3A{brand}"  # "black+jeans" is not the param value "black jeans"
     assert steps[1]["text"] == "{text_1}" and steps[2]["text"] == "{query}"
     assert R.required_params(steps) == ["brand", "text_1", "query"]
     assert all(s["do"] != "tap" for s in steps)

@@ -25,6 +25,8 @@ droidpilot is an [MCP](https://modelcontextprotocol.io) server. Any agent that s
 | Open an app or a link | `open_app`, `open_url`, `list_apps` |
 | Wait | `wait`, `wait_for` |
 | Remember | `notes` (tips per app), `record` and `recipes` (replay a task without the model) |
+| Web pages in Chrome | `web_read`, `web_click`, `web_fill` (exact page text, 0.1 s) |
+| Ask about the screen | `look(question)`: a small vision model answers. The main agent does not get the image. |
 
 An action returns in about 0.4 seconds. It does not check the screen. The next `observe` says `changed=yes` or `changed=NO`. The agent can then find a tap that did nothing.
 
@@ -90,6 +92,38 @@ uv --directory /path/to/droidpilot run droidpilot serve
 
 An example config is in [`examples/mcp.example.json`](examples/mcp.example.json).
 
+### Example: Kiro CLI
+
+1. Copy [`examples/kiro-agent.json`](examples/kiro-agent.json) to `.kiro/agents/phone.json`. Change the path.
+2. Run a task:
+
+```bash
+kiro-cli chat --no-interactive --trust-workspace --agent phone \
+  "Open Settings and tell me the Android version"
+```
+
+`--trust-workspace` is necessary. Without it, Kiro does not load the MCP servers of a new folder.
+
+## Results with a real agent
+
+Kiro CLI with Claude Sonnet 5.5 on a realme 9. Each task was one plain sentence.
+
+| Task | Time | Tool calls | Result |
+|---|---|---|---|
+| Find the Android version in Settings | 32 s | 6 | Correct (Android 14) |
+| Weather for Bengaluru in Chrome | 31 s | 4 | Correct |
+| Read the Amazon cart, then find black jeans from a global brand under 2,000 rupees. Change nothing. | 98 s | 17 | Correct. Cart unchanged. |
+
+The first version of droidpilot needed about 27 minutes and 59 calls for the Amazon task, and did not finish it.
+
+## Vision for `look`
+
+`look` tries these in order:
+
+1. MCP sampling. droidpilot asks the agent's client for a small, fast model. No key is needed. The client must support sampling.
+2. Any OpenAI-compatible endpoint: set `DROIDPILOT_VISION_URL` (https, or http on localhost), `DROIDPILOT_VISION_MODEL`, and `DROIDPILOT_VISION_KEY` if needed. Example: a local Ollama model.
+3. Neither: `look` returns an error. The agent uses `observe(image=true)`.
+
 ## Settings
 
 | Variable | Default | Meaning |
@@ -100,7 +134,8 @@ An example config is in [`examples/mcp.example.json`](examples/mcp.example.json)
 | `DROIDPILOT_COMPACT` | `1` | `0` lists every UI element. |
 | `DROIDPILOT_TREE` | `auto` | `shell` forces the slow dump. `u2` requires the fast one. `auto` uses the fast one if installed. |
 | `DROIDPILOT_SERIAL` | first device | Choose a phone when more than one is connected. |
-| `DROIDPILOT_HOME` | `~/.cache/droidpilot` | Where the run log is kept. |
+| `DROIDPILOT_HOME` | `~/.cache/droidpilot` | Where the run log, notes and recipes are kept. |
+| `DROIDPILOT_VISION_URL` | none | Vision endpoint for `look`. |
 
 ## Commands
 
@@ -108,7 +143,7 @@ An example config is in [`examples/mcp.example.json`](examples/mcp.example.json)
 |---|---|
 | `droidpilot serve` | Start the MCP server. |
 | `droidpilot doctor` | Test adb, the phone, the screen, and touch. |
-| `droidpilot clean` | Remove the files droidpilot put on the phone. |
+| `droidpilot clean` | Remove the files droidpilot put on the phone, and the run log. Notes and recipes stay. |
 
 ## Test
 
@@ -121,7 +156,7 @@ uv run python tests/e2e_device.py   # needs a phone or an emulator
 
 - `observe` takes 0.4 to 0.8 seconds with the optional fast tree, and 3 to 4.5 seconds without it. See [docs/ROADMAP.md](docs/ROADMAP.md).
 - Apps that block screenshots show a black screen. The UI tree can still work.
-- Web views inside apps give only part of their UI to the tree.
+- Web views inside apps give only part of their UI to the tree. Chrome pages can use `web_read` instead.
 - A phone without a PIN is easy to use. A phone with a PIN needs the user to unlock it.
 
 ## Documents

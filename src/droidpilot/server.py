@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import functools
 import inspect
 import json
@@ -9,10 +10,15 @@ import subprocess
 import time
 from typing import Annotated
 
-from mcp.server.fastmcp import FastMCP, Image
+import anyio
+import mcp.types as mt
+from mcp.server.fastmcp import Context, FastMCP, Image
 from pydantic import Field
 
+from . import guard as G
 from . import knowledge as K
+from . import vision as V
+from . import web as W
 from . import recipes as R
 from .adb import Blocked, DeviceError, NeedsHuman
 from .phone import Phone
@@ -263,6 +269,85 @@ def recipes(
     return str(R.run(_phone, K.load_recipe(run)["steps"], params or {}))
 
 
+async def _look(question: str, ctx: Context) -> str:
+    jpeg = await anyio.to_thread.run_sync(_phone.screenshot_jpeg)
+    w, h = _phone.geo.view_size if _phone.geo else (0, 0)
+    q = f"{question}\n(The image is {w}x{h} pixels. That is also the tap coordinate space.)"
+    session = ctx.session
+    if session.check_client_capability(mt.ClientCapabilities(sampling=mt.SamplingCapability())):
+        try:
+            res = await session.create_message(
+                [mt.SamplingMessage(role="user", content=mt.ImageContent(type="image", data=base64.b64encode(jpeg).decode(), mimeType="image/jpeg")),
+                 mt.SamplingMessage(role="user", content=mt.TextContent(type="text", text=q))],
+                max_tokens=V.MAX_TOKENS,
+                system_prompt=V.SYSTEM,
+                model_preferences=mt.ModelPreferences(hints=[mt.ModelHint(name="haiku"), mt.ModelHint(name="flash"), mt.ModelHint(name="mini")],
+                                                       speedPriority=0.9, costPriority=0.8, intelligencePriority=0.3),
+            )
+            text = getattr(res.content, "text", "")
+            if text:
+                return f"{text.strip()} [via host sampling, model={res.model}]"
+            note = "sampling returned no text; "
+        except Exception as exc:  # noqa: BLE001 - the client may refuse in many ways; try the next backend
+            note = f"sampling failed: {exc}; "
+    else:
+        note = "client has no sampling; "
+    if V.endpoint_config():
+        text = await anyio.to_thread.run_sync(V.ask_endpoint, q, jpeg)
+        return f"{text} [via {V.endpoint_config()[1]}]"
+    raise DeviceError(note + "no vision backend. Set DROIDPILOT_VISION_URL, or call observe(image=true) and look yourself.")
+
+
+@mcp.tool()
+async def look(question: Annotated[str, Field(description="one question about the screen, e.g. 'Is a filter panel open?' or 'Where is the play button?'")], ctx: Context) -> str:
+    """Ask a small vision model one question about the screen. You get a short answer, not the image. Use it when observe's list is not enough (games, canvas, images)."""
+    start, status = time.perf_counter(), "ok"
+    try:
+        out = await _look(question, ctx)
+    except NeedsHuman as exc:
+        status, out = "needs_human", f"NEEDS_HUMAN: {exc}"
+    except DeviceError as exc:
+        status, out = "error", f"ERROR: {exc}"
+    try:
+        _trace.log("look", {"question": question}, (time.perf_counter() - start) * 1000, status, len(out))
+    except OSError:
+        pass
+    return out
+
+
+@tool
+def web_read() -> str:
+    """Chrome only: the front tab as text, plus a numbered list of links, buttons and fields. Faster and more exact than the UI tree for web pages."""
+    return W.Chrome(_phone.connect()).read()
+
+
+@tool
+def web_click(
+    text: Annotated[str, Field(description="visible text of the link or button, partial match")],
+    nth: int = 0,
+    confirm: Confirm = False,
+) -> str:
+    """Chrome only: click a link or button by its text. The buy/pay/send/delete guard applies."""
+    hit = G.check(text)
+    if hit and not confirm:
+        raise Blocked(f"{text!r} looks like a purchase, payment, send or delete (matched {hit!r}). Repeat with confirm=true only if the user asked.")
+    out = W.Chrome(_phone.connect()).click(text, nth)
+    if not out.get("ok"):
+        return f"ERROR: no visible link or button matching {text!r} (found {out.get('count', 0)}). Call web_read."
+    hit = G.check(out.get("name"))
+    return f"clicked {out['name']!r}" + (f" (it matched the guard word {hit!r} but you confirmed)" if hit else "")
+
+
+@tool
+def web_fill(
+    field: Annotated[str, Field(description="name, id, placeholder or label of the input")],
+    value: Annotated[str, Field(description="text to put in the field")],
+) -> str:
+    """Chrome only: set a form field's value."""
+    out = W.Chrome(_phone.connect()).fill(field, value)
+    return f"filled {out['field']!r}" if out.get("ok") else f"ERROR: no input matching {field!r}. Call web_read."
+
+
 @tool
 def wait(ms: Annotated[int, Field(description="max wait, 100-10000")] = 1500) -> str:
     """Wait until the screen stops changing (loading spinners, animations)."""
@@ -279,6 +364,9 @@ def wait_for(
 
 
 def run() -> None:
+    import threading
+
+    threading.Thread(target=_phone.warm_up, name="droidpilot-warm-up", daemon=True).start()
     try:
         mcp.run(transport="stdio")
     finally:

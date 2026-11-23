@@ -1,5 +1,13 @@
 # Performance and improvement plan
 
+> **Status:** this file is the first-day baseline and the original analysis. The current numbers are in the README ("Results with a real agent") and in [ROADMAP.md](ROADMAP.md).
+>
+> | Measure | Day 1 | Now |
+> |---|---|---|
+> | Tap or key press | 4.8 to 6.1 s | 0.41 s |
+> | `observe` | about 5.4 s | 0.4 to 0.8 s (first call 1.2 s) |
+> | Amazon jeans task | 27 min, about 59 calls, not finished | 98 s, 17 calls, done by a real agent |
+
 Device: realme 9 (Android 14, 1080x2400), USB cable. Tool: droidpilot 0.1.
 
 ## 1. First real task: what happened

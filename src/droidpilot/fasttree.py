@@ -18,7 +18,7 @@ class FastTree:
             raise DeviceError("uiautomator2 is not installed (pip install 'droidpilot[fast]')") from exc
         try:
             self._d = u2.connect(serial)
-            self._d.info  # forces the server to start now, so a failure shows up here
+            _ = self._d.info  # forces the server to start now, so a failure shows up here
         except Exception as exc:  # u2 raises many types
             raise DeviceError(f"uiautomator2 could not start: {exc}") from exc
 

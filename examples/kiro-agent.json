@@ -1,0 +1,11 @@
+{
+  "name": "phone",
+  "description": "Drives the connected Android phone through droidpilot",
+  "prompt": "You control a real Android phone only through the droidpilot tools. Work in a loop: observe, one action, observe. Prefer tap_text and open_url. Never confirm a buy, pay, send or delete action. When done, give a short report.",
+  "mcpServers": {
+    "droidpilot": {"command": "uv", "args": ["--directory", "/path/to/droidpilot", "run", "droidpilot", "serve"]}
+  },
+  "tools": ["@droidpilot"],
+  "allowedTools": ["@droidpilot"],
+  "includeMcpJson": false
+}

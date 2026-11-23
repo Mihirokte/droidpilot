@@ -13,11 +13,16 @@ from . import store
 
 MAX_FILE = 2_000_000  # rotate the active file at 2 MB
 MAX_DIR = 10_000_000  # keep the whole directory under 10 MB
-_REDACT = {"text"}  # argument names whose value is replaced by its length
+# (tool, argument) pairs whose value is typed by the user and may be private. Replaced by its length.
+# Labels the agent taps (tap_text.text, wait_for.text) stay readable: they are on screen anyway.
+_REDACT = {("type_text", "text"), ("web_fill", "value"), ("recipes", "params"), ("record", "params")}
 
 
-def redact(args: dict) -> dict:
-    return {k: (f"<{len(v)} chars>" if k in _REDACT and isinstance(v, str) else v) for k, v in args.items()}
+def redact(args: dict, tool: str = "type_text") -> dict:
+    def hide(v) -> str:
+        return f"<{len(v)} chars>" if isinstance(v, str) else f"<{len(v)} values>" if isinstance(v, dict) else "<hidden>"
+
+    return {k: (hide(v) if (tool, k) in _REDACT else v) for k, v in args.items()}
 
 
 class Trace:
@@ -29,6 +34,6 @@ class Trace:
         if self.path.exists() and self.path.stat().st_size > MAX_FILE:
             self.path.replace(self.directory / f"trace-{int(time.time())}.jsonl")
             store.enforce_cap(self.directory, MAX_DIR)
-        line = {"t": round(time.time(), 2), "tool": tool, "args": redact(args), "ms": round(ms), "status": status, "chars": result_chars}
+        line = {"t": round(time.time(), 2), "tool": tool, "args": redact(args, tool), "ms": round(ms), "status": status, "chars": result_chars}
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")

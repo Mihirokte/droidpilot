@@ -118,11 +118,14 @@ def test_enforce_cap_deletes_oldest_first(tmp_path) -> None:
 
 
 def test_trace_redacts_typed_text_and_rotates(tmp_path, monkeypatch) -> None:
-    assert redact({"text": "my password", "x": 1}) == {"text": "<11 chars>", "x": 1}
+    assert redact({"text": "my password", "x": 1}, "type_text") == {"text": "<11 chars>", "x": 1}
+    assert redact({"text": "Add to cart"}, "tap_text") == {"text": "Add to cart"}  # tap labels stay readable
+    assert redact({"params": {"q": "x"}}, "recipes") == {"params": "<1 values>"}
     t = Trace(tmp_path)
     t.log("type_text", {"text": "secret"}, 12.3, "ok", 5)
     line = json.loads(t.path.read_text().splitlines()[0])
     assert line["args"]["text"] == "<6 chars>" and "secret" not in t.path.read_text()
+    assert redact({"value": "p@ss"}, "web_fill") == {"value": "<4 chars>"}  # web_fill values are redacted too
     monkeypatch.setattr("droidpilot.trace.MAX_FILE", 50)
     t.log("tap", {"x": 1}, 1, "ok")
     t.log("tap", {"x": 2}, 1, "ok")

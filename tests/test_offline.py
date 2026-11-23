@@ -97,7 +97,7 @@ def test_mcp_handshake_lists_tools_and_reports_missing_device() -> None:
     assert {"observe", "tap", "tap_element", "swipe", "scroll", "pinch", "gesture", "type_text", "press_key", "open_app"} <= names
     status, observed = text.split("||")
     assert status.startswith("ERROR:") and observed.startswith("ERROR:")
-    assert {"tap_text", "wait_for"} <= names and "ui_tree" not in names
+    assert {"tap_text", "wait_for", "look", "web_read", "web_click", "web_fill", "open_url", "notes", "record", "recipes"} <= names and "ui_tree" not in names
 
 
 def _el(i, cls, text, flags, b):

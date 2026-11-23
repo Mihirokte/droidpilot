@@ -52,8 +52,10 @@ Shared building blocks (built once):
 | B1 | App notes, loaded on request | S | Medium | **Done.** `notes()`. `observe` only says that notes exist. |
 | B2 | Recipes (record, replay, stop at first failure) | L | High | **Done.** `record`, `recipes`. Typed text and coordinates are never stored. |
 | -- | `open_url` tool | S | Medium | **Done.** Only safe link schemes. |
-| -- | `look(question)` small-model plug-in | M | Medium | Later |
-| -- | Chrome DevTools for web pages | L | Medium | Later |
+| -- | `look(question)` small-model plug-in | M | Medium | **Done.** MCP sampling first (asks for a small model), then any OpenAI-compatible endpoint. |
+| -- | Chrome DevTools for web pages | L | Medium | **Done.** `web_read` 0.12 s, `web_click` 0.14 s. No install. Guard applies. |
+| -- | Real agent end to end | M | High | **Done.** Kiro CLI, 3 tasks, all correct. See README. |
+| -- | Warm-up at server start | S | Medium | **Done.** First `observe` 7.6 s to 1.2 s. |
 
 ## Measured effect of the first batch (realme 9)
 
@@ -88,3 +90,25 @@ Task: put a black pair of jeans from a global brand, under 2,000 rupees, in the 
 - With the deep link and the new tools, the search took 4 calls. The first attempt took about 59 calls and did not finish.
 - Two bugs found by the live run and fixed: (1) Amazon names its add-to-cart and buy buttons "Submit". Only the element id says what they do. Lookup and the guard now read the id too. (2) The guard now names the element it blocked.
 - The live guard test refused a tap on the Buy button.
+
+## Agent runs (Kiro CLI, Claude Sonnet 5.5)
+
+| Task | Wall time | Calls | Tool time | Result |
+|---|---|---|---|---|
+| Android version in Settings | 32 s | 6 | 9.7 s | Correct |
+| Weather in Chrome | 31 s | 4 | 8.1 s | Correct. The agent chose `open_url` itself. |
+| Amazon cart read + jeans search, no changes | 98 s | 17 | 27.4 s | Correct. Cart unchanged. |
+
+Most of the wall time is now the model, not the phone.
+
+Findings from these runs, all fixed:
+- Kiro skips the MCP servers of an untrusted folder in headless mode. Use `--trust-workspace`.
+- The run log hid the text of every `tap_text`. Now it hides only typed text and form values.
+- The agent used screenshots on a Chrome page. `observe` now says that `web_read` is faster there.
+- The first `observe` paid 7.6 s to start the fast tree server. The server now starts it in the background.
+
+## Not done, on purpose
+
+- No model is bundled. `look` uses the host or an endpoint you choose.
+- No iOS. No wireless adb.
+- The video-packet change signal stays dropped. `observe` is cheap enough.

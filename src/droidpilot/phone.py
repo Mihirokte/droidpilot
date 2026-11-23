@@ -175,6 +175,18 @@ class Phone:
     def current_app(self) -> str:
         return self.state().app or "unknown"
 
+    def warm_up(self) -> None:
+        """Start the scrcpy control socket and the fast tree server ahead of the first tool call.
+        Runs in a background thread at server start. Any failure is left for the real call to report."""
+        try:
+            self.connect()
+            self._control()
+            if TREE != "shell" and self._fast is None:
+                self._fast = FastTree(self.connect().serial)
+                self.tree_backend = "u2"
+        except DeviceError:
+            pass
+
     # ---- perception -------------------------------------------------------
     def _tree_xml(self) -> str:
         """UI hierarchy XML from the fastest backend that works. Fall back to the shell dump."""
@@ -231,6 +243,8 @@ class Phone:
         pkg = st.app.split("/")[0] if st.app else ""
         if pkg and K.has_notes(pkg):
             head += "\nnotes: saved for this app. Call notes() to read them."
+        if pkg == "com.android.chrome":
+            head += "\nhint: Chrome is in front. web_read gives the exact page text and links faster than this list."
         if d is None:
             head += "\nchanged=first observe"
         elif not d.changed:
@@ -243,9 +257,6 @@ class Phone:
                 body += "\ngone: " + "; ".join(r[:40] for r in d.removed[:12])
             return head + "\n(showing only new elements; indices still valid for tap_element)\n" + body
         return head + "\n" + P.format_ui(els, self.geo)
-
-    def refresh_ui(self) -> str:
-        return self.observe()
 
     # ---- action wrapper ---------------------------------------------------
     def _acting(self, label: str, fn) -> Outcome:
