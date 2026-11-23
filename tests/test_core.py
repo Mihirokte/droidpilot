@@ -163,3 +163,24 @@ def test_tap_element_rejects_old_snapshot_id() -> None:
         phone.tap_element(0, snapshot_id=4)
     with pytest.raises(DeviceError, match="No element"):
         phone.tap_element(9, snapshot_id=5)
+
+
+def test_id_only_buttons_are_found_and_guarded() -> None:
+    """Amazon labels both buttons 'Submit'. Only the id says what they do."""
+    import pytest
+
+    from droidpilot import perception as P
+    from droidpilot.adb import Blocked
+    from droidpilot.phone import Phone
+
+    add = el(0, "Button", "Submit", ["click"], (30, 849, 690, 935), rid="add-to-cart-button")
+    buy = el(1, "Button", "Submit", ["click"], (30, 961, 690, 1047), rid="buy-now-button")
+    s = snap(1, [add, buy])
+    assert SN.find(s, "Add to cart")[0].index == 0
+    assert SN.find(s, "buy now")[0].index == 1
+    phone = Phone()
+    phone.geo = P.Geometry(1080, 2400, 1600)
+    phone.snapshot, phone._snap_time = s, time.monotonic()
+    with pytest.raises(Blocked):
+        phone._check_guard(*phone.geo.to_view(360, 1000), confirm=False)
+    phone._check_guard(*phone.geo.to_view(360, 890), confirm=False)  # add-to-cart is allowed

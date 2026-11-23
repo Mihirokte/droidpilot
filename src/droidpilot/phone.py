@@ -311,10 +311,10 @@ class Phone:
         if confirm or not snap or not self.geo or time.monotonic() - self._snap_time > GUARD_TTL:
             return
         el = SN.element_at(snap, *self.geo.to_device(x, y))
-        hit = G.check(SN.label(el)) if el else None
+        hit = G.check(SN.words(el)) if el else None
         if hit:
             raise Blocked(
-                f"This tap is on {SN.label(el)[:60]!r}, which looks like a purchase, payment, send or delete "
+                f"This tap is on {SN.words(el)[:70]!r}, which looks like a purchase, payment, send or delete "
                 f"(matched {hit!r}). Repeat the call with confirm=true only if the user asked for it."
             )
 

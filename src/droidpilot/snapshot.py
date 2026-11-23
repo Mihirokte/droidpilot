@@ -16,6 +16,16 @@ def label(e: UiElement) -> str:
     return e.text or e.desc or e.resource_id
 
 
+def words(e: UiElement) -> str:
+    """Everything that names the element: text, description and id (ids use - or _ as separators).
+
+    Some apps give every button the text "Submit" and put the meaning only in the id
+    (Amazon: add-to-cart-button, buy-now-button).
+    """
+    ident = e.resource_id.replace("-", " ").replace("_", " ")
+    return " | ".join(part for part in (e.text, e.desc, ident) if part)
+
+
 @dataclass(frozen=True)
 class Snapshot:
     id: int
@@ -56,8 +66,8 @@ def _area(e: UiElement) -> int:
 def find(snap: Snapshot, text: str) -> list[UiElement]:
     """Elements whose label contains `text` (case-insensitive). Best matches first:
     exact label, then interactive, then smaller area."""
-    needle = text.casefold().strip()
-    hits = [e for e in snap.elements if needle in label(e).casefold()]
+    needle = text.casefold().strip().replace("-", " ").replace("_", " ")
+    hits = [e for e in snap.elements if needle in words(e).casefold()]
     return sorted(
         hits,
         key=lambda e: (label(e).casefold() != needle, not ({"click", "long-click", "edit"} & set(e.flags)), _area(e)),

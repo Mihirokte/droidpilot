@@ -47,7 +47,7 @@ Shared building blocks (built once):
 | C7 | Run log with size cap | S | Medium | **Done** |
 | A2 | Video-packet change and settle signal | M | High | Next |
 | A5 | Fast UI tree (uiautomator2 spike first) | L | High | Next. Spike first. |
-| -- | Retest Amazon deep link from a cold start | S | Unknown | Partly done. The link opened the app on a search page with the query `jeans men black` (cold start, 3.9 s). The brand and price filters in the link could not be checked, because the phone had no internet. |
+| -- | Retest Amazon deep link from a cold start | S | High | **Done. It works.** A link with brand and price filters (`rh=p_123:<brand id>,p_36:-200000`) opened the app on filtered results from a cold start. The brand ids come from the filter panel (Levi's 200356, Jack & Jones 339433). Recipes should use this. |
 | B1 | App notes, loaded by foreground app | S | Medium | After A5 |
 | B2 | Recipes (record, replay, diverge to the agent) | L | High | After B1 and C7 |
 | -- | `open_url` tool | S | Medium | With B2 |
@@ -67,3 +67,13 @@ Shared building blocks (built once):
 `observe` is now limited by the UI dump (2.7 s floor). That is A5.
 
 Not measured: the end-to-end time of the Amazon task after these changes. We should run it again after A5.
+
+## Live task result
+
+Task: put a black pair of jeans from a global brand, under 2,000 rupees, in the Amazon cart. No order.
+
+- Result: **done**. Cart holds Jack & Jones Men's Regular Fit Low Rise Black Jeans, 1,439 rupees, size 30W/32L, quantity 1. Nothing was ordered.
+- Levi's 511 in Black was found at 1,704 rupees, but only size 28 was in stock.
+- With the deep link and the new tools, the search took 4 calls. The first attempt took about 59 calls and did not finish.
+- Two bugs found by the live run and fixed: (1) Amazon names its add-to-cart and buy buttons "Submit". Only the element id says what they do. Lookup and the guard now read the id too. (2) The guard now names the element it blocked.
+- The live guard test refused a tap on the Buy button.
