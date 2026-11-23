@@ -47,7 +47,7 @@ Shared building blocks (built once):
 | C7 | Run log with size cap | S | Medium | **Done** |
 | A2 | Video-packet change and settle signal | M | High | Next |
 | A5 | Fast UI tree (uiautomator2 spike first) | L | High | Next. Spike first. |
-| -- | Retest Amazon deep link from a cold start | S | Unknown | Next |
+| -- | Retest Amazon deep link from a cold start | S | Unknown | Partly done. The link opened the app on a search page with the query `jeans men black` (cold start, 3.9 s). The brand and price filters in the link could not be checked, because the phone had no internet. |
 | B1 | App notes, loaded by foreground app | S | Medium | After A5 |
 | B2 | Recipes (record, replay, diverge to the agent) | L | High | After B1 and C7 |
 | -- | `open_url` tool | S | Medium | With B2 |
