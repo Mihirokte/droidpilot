@@ -90,17 +90,20 @@ def diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean(np.abs(a - b)))
 
 
-def dump_ui(adb: Adb) -> list[UiElement]:
-    for attempt in range(4):  # first dump after boot or a window change can return a null root
+def fetch_xml_shell(adb: Adb) -> str:
+    """UI hierarchy through `uiautomator dump`. Reliable everywhere. About 2.7 s on a realme 9."""
+    for _ in range(4):  # first dump after boot or a window change can return a null root
         raw = adb.exec_out("uiautomator dump /dev/tty", timeout=30).decode("utf-8", errors="replace")
-        start = raw.find("<?xml")
-        end = raw.rfind("</hierarchy>")
+        start, end = raw.find("<?xml"), raw.rfind("</hierarchy>")
         if start >= 0 and end >= 0:
-            break
+            return raw[start : end + len("</hierarchy>")]
         time.sleep(0.8)
-    else:
-        raise DeviceError(f"uiautomator dump failed: {raw.strip()[:200]}")
-    root = ET.fromstring(raw[start : end + len("</hierarchy>")])
+    raise DeviceError(f"uiautomator dump failed: {raw.strip()[:200]}")
+
+
+def parse_ui(xml: str) -> list[UiElement]:
+    """Parse a uiautomator XML hierarchy. Keep nodes that are interactive or carry text."""
+    root = ET.fromstring(xml)
     elements: list[UiElement] = []
     for node in root.iter("node"):
         flags = tuple(
@@ -137,6 +140,10 @@ def dump_ui(adb: Adb) -> list[UiElement]:
             )
         )
     return elements
+
+
+def dump_ui(adb: Adb) -> list[UiElement]:
+    return parse_ui(fetch_xml_shell(adb))
 
 
 def compact(elements: list[UiElement], screen_w: int, screen_h: int) -> list[UiElement]:

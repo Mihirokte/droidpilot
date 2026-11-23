@@ -12,6 +12,8 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP, Image
 from pydantic import Field
 
+from . import knowledge as K
+from . import recipes as R
 from .adb import Blocked, DeviceError, NeedsHuman
 from .phone import Phone
 from .trace import Trace
@@ -30,6 +32,25 @@ Loop: `observe`, choose ONE action, act, `observe` again.
 mcp = FastMCP("droidpilot", instructions=INSTRUCTIONS)
 _phone = Phone()
 _trace = Trace()
+_rec: list[tuple[str, dict]] | None = None  # calls captured between record(start) and record(stop)
+_rec_skipped = 0
+_COORDINATE_TOOLS = {"tap", "double_tap", "long_press", "swipe", "pinch", "gesture"}
+
+
+def _record(name: str, args: dict, result) -> None:
+    """Capture a successful call. Coordinate gestures are not stored: they break when the layout changes."""
+    global _rec_skipped
+    if _rec is None or not isinstance(result, str) or result.startswith(("ERROR", "BLOCKED", "NEEDS_HUMAN", "NOT FOUND")):
+        return
+    if name in _COORDINATE_TOOLS:
+        _rec_skipped += 1
+    elif name == "tap_element" and _phone.last_tap:
+        text, nth = _phone.last_tap
+        _rec.append(("tap_text", {"text": text, **({"nth": nth} if nth else {})}))
+    elif name == "tap_text":
+        _rec.append(("tap_text", {"text": args["text"], **({"nth": args["nth"]} if args.get("nth") else {})}))
+    elif name in R.RECORDABLE:
+        _rec.append((name, {k: v for k, v in args.items() if v is not None}))
 
 X = Annotated[float, Field(description="x in screenshot space")]
 Y = Annotated[float, Field(description="y in screenshot space")]
@@ -58,6 +79,8 @@ def tool(fn):
             bound = sig.bind_partial(*args, **kwargs).arguments
             size = len(result) if isinstance(result, str) else sum(len(p) for p in result if isinstance(p, str))
             _trace.log(fn.__name__, bound, (time.perf_counter() - start) * 1000, status, size)
+            if status == "ok":
+                _record(fn.__name__, dict(bound), result)
         except OSError:
             pass  # a full disk must never break a tool call
         return result
@@ -179,6 +202,65 @@ def open_app(package: Annotated[str, Field(description="Android package name, e.
 def list_apps(include_system: bool = False) -> str:
     """Installed package names (third-party only unless include_system)."""
     return "\n".join(_phone.list_apps(include_system))
+
+
+@tool
+def open_url(
+    url: Annotated[str, Field(description="http(s), geo, mailto, tel, sms or market link")],
+    package: Annotated[str | None, Field(description="force this app to handle the link, e.g. in.amazon.mShop.android.shopping")] = None,
+) -> str:
+    """Open a link. Many apps open the matching screen directly (a deep link), which skips many taps."""
+    return str(_phone.open_url(url, package))
+
+
+@tool
+def notes(
+    add: Annotated[str | None, Field(description="one short tip to save, e.g. 'Back does not close the filter panel'")] = None,
+    package: Annotated[str | None, Field(description="app package. Default: the foreground app")] = None,
+) -> str:
+    """Read the saved tips for an app, or save one. Tips are plain text kept on this Mac."""
+    pkg = package or _phone.state().app.split("/")[0]
+    if add:
+        return f"saved ({K.add_note(pkg, add)} bytes used for {pkg})"
+    return K.get_notes(pkg) or f"(no notes for {pkg})"
+
+
+@tool
+def record(
+    action: Annotated[str, Field(description="start | stop")],
+    name: Annotated[str | None, Field(description="recipe name when stopping: a-z, 0-9, - or _")] = None,
+    params: Annotated[dict[str, str] | None, Field(description="on stop: {param_name: literal value used while recording}")] = None,
+    description: str = "",
+) -> str:
+    """Record the next tool calls as a recipe. Do the task once, then stop. Coordinates and typed text are never stored."""
+    global _rec, _rec_skipped
+    if action == "start":
+        _rec, _rec_skipped = [], 0
+        return "recording. Do the task, then call record(action='stop', name=..., params=...)."
+    if action != "stop":
+        return "ERROR: action must be start or stop"
+    if _rec is None:
+        return "ERROR: not recording"
+    if not name:
+        return "ERROR: give a name to save the recipe"
+    calls, skipped, _rec, _rec_skipped = _rec, _rec_skipped, None, 0
+    steps = R.compile_steps(calls, params or {})
+    app = _phone.state().app.split("/")[0]
+    K.save_recipe(name, app, description, steps)
+    need = R.required_params(steps)
+    return f"saved recipe {name!r}: {len(steps)} step(s), parameters {need}" + (f". {skipped} coordinate action(s) were not stored." if skipped else "")
+
+
+@tool
+def recipes(
+    run: Annotated[str | None, Field(description="recipe name to run. Omit to list recipes")] = None,
+    params: Annotated[dict[str, str] | None, Field(description="values for the recipe parameters")] = None,
+) -> str:
+    """List saved recipes, or run one. A run stops at the first failure and tells you where."""
+    if not run:
+        rows = K.list_recipes()
+        return "\n".join(f"{r['name']} ({r['app']}): {r['description']} params={R.required_params(r['steps'])}" for r in rows) or "(no recipes yet)"
+    return str(R.run(_phone, K.load_recipe(run)["steps"], params or {}))
 
 
 @tool

@@ -10,3 +10,11 @@ droidpilot controls a real phone. Treat it like a remote desktop.
 - Do not give an agent a phone with banking apps unlocked.
 
 To report a problem, open a GitHub issue. For a serious flaw, use a private security advisory on GitHub.
+
+## Notes and recipes
+
+- They are plain files in `~/.cache/droidpilot/knowledge`. Anyone with access to your Mac can read them.
+- A recipe stores element text and link addresses. A link can hold a search word, so use parameters for private values.
+- Typed text is never stored in a recipe. It becomes a parameter that you supply at replay.
+- A recipe cannot confirm a buy, pay, send or delete tap.
+- `open_url` accepts only http, https, geo, mailto, tel, sms, smsto and market links.

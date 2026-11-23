@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import os
 import sys
+import tempfile
 import time
 
 from mcp import ClientSession, StdioServerParameters
@@ -20,17 +22,17 @@ def text_of(res) -> str:
 
 
 async def main() -> int:
-    params = StdioServerParameters(command=sys.executable, args=["-m", "droidpilot"])
+    params = StdioServerParameters(command=sys.executable, args=["-m", "droidpilot"], env=dict(os.environ, DROIDPILOT_HOME=tempfile.mkdtemp()))  # keep test logs and recipes out of the real store
     failures: list[str] = []
 
     async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
         await s.initialize()
 
-        async def call(name: str, **args) -> str:
+        async def call(tool: str, **args) -> str:
             t = time.perf_counter()
-            res = await s.call_tool(name, args)
+            res = await s.call_tool(tool, args)
             out = text_of(res)
-            print(f"--- {time.perf_counter() - t:5.2f}s {name}({args}) -> {out[:230]!r}")
+            print(f"--- {time.perf_counter() - t:5.2f}s {tool}({args}) -> {out[:230]!r}")
             return out
 
         def check(ok: bool, what: str) -> None:
@@ -39,6 +41,7 @@ async def main() -> int:
                 failures.append(what)
 
         check('"scrcpy"' in await call("device_status"), "scrcpy backend active")
+        await call("press_key", key="home")  # start from a known screen
         out = await call("observe")  # also proves auto-wake: the phone may start asleep
         check("snapshot=" in out and "changed=first observe" in out, "observe returns snapshot + banner")
         first_id = int(re.search(r"snapshot=(\d+)", out).group(1))
@@ -69,6 +72,25 @@ async def main() -> int:
         check(out.startswith("gesture with 3"), "3-finger gesture runs")
         out = await call("wait_for", text="zzzz-not-on-screen", timeout_ms=1000)
         check(out.startswith("NOT FOUND"), "wait_for times out cleanly")
+        # recipes: record two steps, replay them, check params and notes
+        await call("press_key", key="home")
+        await call("record", action="start")
+        await call("open_app", package="com.android.settings")
+        await call("wait_for", text="Settings", timeout_ms=8000)
+        out = await call("record", action="stop", name="open-settings", params={"pkg": "com.android.settings"})
+        check("2 step(s)" in out and "pkg" in out, "record stop saves 2 steps with a parameter")
+        await call("press_key", key="home")
+        out = await call("recipes", run="open-settings")
+        check("Missing parameters" in out, "recipe without params does nothing")
+        out = await call("recipes", run="open-settings", params={"pkg": "com.android.settings"})
+        check(out.startswith("Recipe finished"), "recipe replays with params")
+        out = await call("observe")
+        check("com.android.settings" in out, "replay opened Settings")
+        out = await call("notes", add="Settings: scroll to find rarely used items")
+        out2 = await call("observe")
+        check("notes: saved" in out2, "observe hints that notes exist")
+        out = await call("open_url", url="file:///etc/passwd")
+        check(out.startswith("ERROR"), "open_url refuses file links")
         await call("press_key", key="home")
     print("\nFAILED: " + "; ".join(failures) if failures else "\nALL PASSED")
     return 1 if failures else 0

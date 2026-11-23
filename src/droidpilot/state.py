@@ -6,12 +6,15 @@ import re
 from dataclasses import dataclass
 
 # One shell call. grep on the phone keeps the transfer small.
+# The keyboard flag is not here: `dumpsys input_method` alone costs 0.65 s. See KEYBOARD_PROBE.
 PROBE = (
     "dumpsys power | grep -E 'mWakefulness='; "
     "dumpsys window | grep -E 'mCurrentFocus=|mFocusedApp=|isKeyguardShowing=|mRotation=[0-9]'; "
-    "dumpsys input_method | grep -E 'mInputShown='; "
     "wm size"
 )
+
+
+KEYBOARD_PROBE = "dumpsys input_method | grep -E 'mInputShown='"  # run only when a text field has focus
 
 
 @dataclass(frozen=True)

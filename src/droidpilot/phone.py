@@ -7,16 +7,20 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 
 from PIL import Image
 
 from . import guard as G
+from . import knowledge as K
+from . import recipes as R
 from . import perception as P
 from . import scrcpy as S
 from . import snapshot as SN
 from . import state as ST
 from .adb import Adb, Blocked, DeviceError, NeedsHuman, list_devices
+from .fasttree import FastTree
 
 KEYCODES = {
     "home": 3, "back": 4, "call": 5, "endcall": 6, "volume_up": 24, "volume_down": 25,
@@ -27,6 +31,7 @@ KEYCODES = {
     "wakeup": 224, "sleep": 223, "mute": 164, "notifications": 83,
 }
 
+TREE = os.environ.get("DROIDPILOT_TREE", "auto")  # auto | shell | u2
 COMPACT = os.environ.get("DROIDPILOT_COMPACT", "1") != "0"  # merge card children into one line
 VERIFY = os.environ.get("DROIDPILOT_VERIFY", "off")  # off: fixed wait | full: screenshot diff loop
 SETTLE_MS = int(os.environ.get("DROIDPILOT_SETTLE_MS", "400"))
@@ -60,8 +65,12 @@ class Phone:
         self.input_backend = "unconnected"
         self.backend_note = ""
         self._snap_time = 0.0
+        self._fast: FastTree | None = None
+        self.tree_backend = "unconnected"
         self._state: ST.DeviceState | None = None
         self._ready_at = 0.0
+        self._wakes = 0
+        self.last_tap: tuple[str, int] | None = None  # (text, nth) of the last tapped element, for recording
 
     # ---- connection -------------------------------------------------------
     def connect(self) -> Adb:
@@ -125,6 +134,7 @@ class Phone:
         return st
 
     def _wake(self, st: ST.DeviceState) -> ST.DeviceState:
+        self._wakes += 1
         adb = self.connect()
         if not st.awake:
             adb.shell("input keyevent 224")
@@ -156,6 +166,7 @@ class Phone:
             "view_px": list(self.geo.view_size) if self.geo else None,
             "rotation": st.rotation,
             "input_backend": self.input_backend,
+            "tree_backend": self.tree_backend,
             "multi_touch": ctl is not None,
             "note": self.backend_note,
             "current_app": st.app,
@@ -165,6 +176,24 @@ class Phone:
         return self.state().app or "unknown"
 
     # ---- perception -------------------------------------------------------
+    def _tree_xml(self) -> str:
+        """UI hierarchy XML from the fastest backend that works. Fall back to the shell dump."""
+        adb = self.connect()
+        if TREE != "shell" and self.tree_backend in ("unconnected", "u2"):
+            try:
+                if self._fast is None:
+                    self._fast = FastTree(adb.serial)
+                xml = self._fast.xml()
+                self.tree_backend = "u2"
+                return xml
+            except DeviceError as exc:
+                self._fast = None
+                self.tree_backend = "shell"
+                self.backend_note = (self.backend_note + " " if self.backend_note else "") + f"fast tree off: {exc}"
+        if self.tree_backend == "unconnected":
+            self.tree_backend = "shell"
+        return P.fetch_xml_shell(adb)
+
     def grab(self) -> Image.Image:
         img = P.capture(self.connect())
         self.geo = P.Geometry(img.width, img.height, self.view_long_side)
@@ -178,10 +207,20 @@ class Phone:
 
     def observe(self, diff_only: bool = False) -> str:
         """Dump the UI, make a snapshot, and report what changed since the previous one."""
-        st = self._ready(fresh=True)
+        self.connect()
+        wakes = self._wakes
+        with ThreadPoolExecutor(max_workers=1) as pool:  # read the tree while the state probe runs
+            xml_future = pool.submit(self._tree_xml)
+            st = self._ready(fresh=True)
+            xml = xml_future.result()
+        if self._wakes != wakes:  # the phone was asleep or locked: the tree we read was the lock screen
+            xml = self._tree_xml()
         assert self.geo
-        full = P.dump_ui(self.connect())
+        full = P.parse_ui(xml)
         els = P.compact(full, self.geo.width, self.geo.height) if COMPACT else full
+        if any({"edit", "focused"} <= set(e.flags) for e in els):  # only then is the keyboard query worth 0.65 s
+            kb = "mInputShown=true" in self.connect().shell(ST.KEYBOARD_PROBE, timeout=15)
+            st = replace(st, keyboard=kb)
         prev = self.snapshot
         snap = SN.Snapshot((prev.id + 1) if prev else 1, st.app, tuple(els), SN.digest(els))
         d = SN.diff(prev, snap) if prev else None
@@ -189,6 +228,9 @@ class Phone:
 
         w, h = self.geo.view_size
         head = f"snapshot={snap.id} screen={w}x{h} {st.banner()}"
+        pkg = st.app.split("/")[0] if st.app else ""
+        if pkg and K.has_notes(pkg):
+            head += "\nnotes: saved for this app. Call notes() to read them."
         if d is None:
             head += "\nchanged=first observe"
         elif not d.changed:
@@ -321,6 +363,11 @@ class Phone:
     def tap(self, x: float, y: float, confirm: bool = False) -> Outcome:
         self._ready()
         self._check_guard(x, y, confirm)
+        self.last_tap = None
+        if self.snapshot and self.geo and time.monotonic() - self._snap_time <= GUARD_TTL:
+            el = SN.element_at(self.snapshot, *self.geo.to_device(x, y))
+            if el:
+                self.last_tap = R.selector_for(self.snapshot, el)
         return self._acting(f"tapped ({x:.0f},{y:.0f})", lambda: self._perform([[(x, y)]], 60))
 
     def tap_element(self, index: int, snapshot_id: int | None = None, confirm: bool = False) -> Outcome:
@@ -438,6 +485,22 @@ class Phone:
 
         return self._acting(f"opened {package}", run)
 
+    def open_url(self, url: str, package: str | None = None) -> Outcome:
+        """Open a link in an app (a deep link when the app handles it). Only safe schemes are allowed."""
+        if not url.split(":", 1)[0].lower() in {"http", "https", "geo", "mailto", "tel", "sms", "smsto", "market"}:
+            raise DeviceError("open_url allows http, https, geo, mailto, tel, sms, smsto and market links only")
+        adb = self.connect()
+
+        def run() -> None:
+            cmd = f"am start -W -a android.intent.action.VIEW -d {_shell_quote(url)}"
+            if package:
+                cmd += f" {_shell_quote(package)}"
+            out = adb.shell(cmd, timeout=30)
+            if "Error" in out or "unable to resolve" in out.lower():
+                raise DeviceError(f"cannot open {url!r}: {out.strip()[:200]}")
+
+        return self._acting(f"opened link {url[:60]}", run)
+
     def list_apps(self, include_system: bool = False) -> list[str]:
         flag = "" if include_system else "-3"
         out = self.connect().shell(f"pm list packages {flag}".strip())
@@ -446,6 +509,8 @@ class Phone:
     def close(self) -> None:
         if self.control:
             self.control.stop()
+        if self._fast:
+            self._fast.stop()
 
 
 def _shell_quote(s: str) -> str:

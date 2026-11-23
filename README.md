@@ -22,8 +22,9 @@ droidpilot is an [MCP](https://modelcontextprotocol.io) server. Any agent that s
 | Move a finger | `swipe`, `scroll` |
 | Use two or more fingers | `pinch`, `gesture` |
 | Type and press keys | `type_text`, `press_key` |
-| Open an app | `open_app`, `list_apps` |
+| Open an app or a link | `open_app`, `open_url`, `list_apps` |
 | Wait | `wait`, `wait_for` |
+| Remember | `notes` (tips per app), `record` and `recipes` (replay a task without the model) |
 
 An action returns in about 0.4 seconds. It does not check the screen. The next `observe` says `changed=yes` or `changed=NO`. The agent can then find a tap that did nothing.
 
@@ -43,6 +44,23 @@ AI agent  --MCP-->  droidpilot  --scrcpy control socket-->  phone (real touch ev
 2. If scrcpy fails, droidpilot uses `adb shell input`. This gives one finger only.
 3. droidpilot reads the screen with `screencap` and `uiautomator dump`.
 
+## Recipes and notes
+
+Do a task once while `record` is on. droidpilot stores the steps by element text, never by coordinates. It never stores typed text. You name the values that change (for example the search words) as parameters.
+
+```
+record(action="start")
+open_url(...) ; wait_for(...) ; tap_text(...)
+record(action="stop", name="amazon-brand-search", params={"query": "jeans", "brand": "339433"})
+recipes(run="amazon-brand-search", params={"query": "shoes", "brand": "200356"})
+```
+
+A recipe stops at the first failure and tells the agent which step failed. A recipe cannot confirm a buy, pay, send or delete tap.
+
+`notes` keeps short tips for one app, for example "Back does not close the filter panel". They load only when the agent asks.
+
+Both live in `~/.cache/droidpilot/knowledge`. `droidpilot clean` does not delete them.
+
 ## Quick start
 
 Do these steps once on the phone:
@@ -58,6 +76,7 @@ Then run these commands on the computer:
 ```bash
 source env.sh               # sets the paths for adb and scrcpy
 uv run droidpilot doctor    # checks the phone and every layer
+uv sync --extra fast        # optional: faster UI tree (0.6 s instead of 2.7 s)
 uv run droidpilot serve     # starts the MCP server
 ```
 
@@ -79,6 +98,7 @@ An example config is in [`examples/mcp.example.json`](examples/mcp.example.json)
 | `DROIDPILOT_SETTLE_MS` | `400` | Wait after each action. |
 | `DROIDPILOT_GUARD` | `on` | `off` turns the safety guard off. |
 | `DROIDPILOT_COMPACT` | `1` | `0` lists every UI element. |
+| `DROIDPILOT_TREE` | `auto` | `shell` forces the slow dump. `u2` requires the fast one. `auto` uses the fast one if installed. |
 | `DROIDPILOT_SERIAL` | first device | Choose a phone when more than one is connected. |
 | `DROIDPILOT_HOME` | `~/.cache/droidpilot` | Where the run log is kept. |
 
@@ -99,7 +119,7 @@ uv run python tests/e2e_device.py   # needs a phone or an emulator
 
 ## Known limits
 
-- `observe` takes about 3 seconds. The UI dump on the phone is the limit. See [docs/ROADMAP.md](docs/ROADMAP.md).
+- `observe` takes 0.4 to 0.8 seconds with the optional fast tree, and 3 to 4.5 seconds without it. See [docs/ROADMAP.md](docs/ROADMAP.md).
 - Apps that block screenshots show a black screen. The UI tree can still work.
 - Web views inside apps give only part of their UI to the tree.
 - A phone without a PIN is easy to use. A phone with a PIN needs the user to unlock it.

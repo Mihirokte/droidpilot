@@ -120,3 +120,25 @@ def test_compact_merges_card_children_and_keeps_nested_buttons() -> None:
     assert "Levi's | 512 Slim Jeans" in labels
     assert "Add to cart" in labels and "Loose text" in labels
     assert len(out) == 4  # webview, card, button, loose text
+
+
+def test_parse_ui_matches_dump_ui_on_same_xml() -> None:
+    xml = HIERARCHY[HIERARCHY.index("<?xml") : HIERARCHY.rindex("</hierarchy>") + len("</hierarchy>")]
+    assert P.parse_ui(xml) == P.dump_ui(FakeAdb())  # type: ignore[arg-type]
+
+
+def test_tree_falls_back_to_shell_when_fast_backend_fails(monkeypatch) -> None:
+    from droidpilot import phone as phone_mod
+    from droidpilot.adb import DeviceError
+
+    class Broken:
+        def __init__(self, serial):
+            raise DeviceError("no u2")
+
+    monkeypatch.setattr(phone_mod, "FastTree", Broken)
+    monkeypatch.setattr(P, "fetch_xml_shell", lambda adb: "<hierarchy/>")
+    ph = phone_mod.Phone()
+    ph.adb = type("A", (), {"serial": "x"})()  # type: ignore[assignment]
+    assert ph._tree_xml() == "<hierarchy/>"
+    assert ph.tree_backend == "shell" and "fast tree off" in ph.backend_note
+    assert ph._tree_xml() == "<hierarchy/>"  # stays on the shell backend, no retry storm

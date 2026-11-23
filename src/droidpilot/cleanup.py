@@ -25,8 +25,14 @@ def clean_device(adb: Adb) -> list[str]:
         done.append("stopped stale scrcpy servers on phone")
     except DeviceError:
         pass
+    try:
+        adb.shell("pkill -f u2.jar")  # uiautomator2 server, if the fast tree backend started it
+    except DeviceError:
+        pass
     adb.shell(f"rm -f {REMOTE_JAR}")
     done.append(f"removed {REMOTE_JAR} from phone")
+    adb.shell("rm -rf /data/local/tmp/u2 /data/local/tmp/u2.jar")
+    done.append("removed uiautomator2 files (u2.jar) from phone")
     for line in adb.run("forward", "--list").splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[2].startswith("localabstract:scrcpy_"):
