@@ -256,6 +256,7 @@ def test_parallel_connect_in_one_process_does_not_lock_itself_out(tmp_path, monk
     from droidpilot.devlock import DeviceLock
 
     monkeypatch.setattr(phone_mod, "list_devices", lambda: [AdbDevice("s1", "device", "")])
+    monkeypatch.setattr(phone_mod, "Adb", lambda serial: type("FakeAdb", (), {"serial": serial})())  # CI has no adb
     monkeypatch.setattr(phone_mod, "DeviceLock", lambda serial: DeviceLock(serial, tmp_path))
     p = phone_mod.Phone()
     errors: list[Exception] = []
@@ -273,3 +274,23 @@ def test_parallel_connect_in_one_process_does_not_lock_itself_out(tmp_path, monk
         t.join()
     assert errors == [] and p.adb is not None
     p._lock.release()
+
+
+def test_connect_failure_does_not_leave_the_phone_locked(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from droidpilot import phone as phone_mod
+    from droidpilot.adb import AdbDevice, DeviceError
+    from droidpilot.devlock import DeviceLock
+
+    def no_adb(serial):
+        raise DeviceError("adb not found")
+
+    monkeypatch.setattr(phone_mod, "list_devices", lambda: [AdbDevice("s2", "device", "")])
+    monkeypatch.setattr(phone_mod, "Adb", no_adb)
+    monkeypatch.setattr(phone_mod, "DeviceLock", lambda serial: DeviceLock(serial, tmp_path))
+    with pytest.raises(DeviceError, match="adb not found"):
+        phone_mod.Phone().connect()
+    free = DeviceLock("s2", tmp_path)
+    free.acquire(wait_s=0)  # nobody holds it
+    free.release()

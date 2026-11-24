@@ -92,11 +92,11 @@ class Phone:
             ready = [d for d in ready if d.serial == self._requested_serial]
         if not ready:
             raise DeviceError(self._no_device_hint(devices))
+        adb = Adb(ready[0].serial)  # may raise (no adb binary): before the lock, so nothing leaks
         lock = DeviceLock(ready[0].serial)
         lock.acquire()  # raises DeviceError if another droidpilot holds this phone
-        self._lock = lock
-        self.adb = Adb(ready[0].serial)
-        return self.adb
+        self._lock, self.adb = lock, adb
+        return adb
 
     @staticmethod
     def _no_device_hint(devices: list) -> str:
