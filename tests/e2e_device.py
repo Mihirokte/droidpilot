@@ -7,8 +7,8 @@ Not collected by pytest (needs a device). Prints the time of every call.
 from __future__ import annotations
 
 import asyncio
-import re
 import os
+import re
 import sys
 import tempfile
 import time

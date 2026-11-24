@@ -1,27 +1,33 @@
-"""MCP server (stdio) exposing the phone to any MCP-capable coding agent."""
+"""MCP server (stdio). Each tool is a thin call into Phone, Chrome, recipes or vision.
+
+Results are plain text. Failures start with ERROR, BLOCKED or NEEDS_HUMAN so the agent can react.
+Every call is logged to the run log (trace) and, while recording, to the recorder.
+"""
 
 from __future__ import annotations
 
-import base64
+import contextlib
 import functools
 import inspect
 import json
 import subprocess
+import threading
 import time
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, Any
 
 import anyio
-import mcp.types as mt
 from mcp.server.fastmcp import Context, FastMCP, Image
 from pydantic import Field
 
 from . import guard as G
 from . import knowledge as K
+from . import recipes as R
 from . import vision as V
 from . import web as W
-from . import recipes as R
-from .adb import Blocked, DeviceError, NeedsHuman
+from .errors import Blocked, DeviceError, NeedsHuman
 from .phone import Phone
+from .recorder import Recorder
 from .trace import Trace
 
 INSTRUCTIONS = """\
@@ -38,62 +44,56 @@ Loop: `observe`, choose ONE action, act, `observe` again.
 mcp = FastMCP("droidpilot", instructions=INSTRUCTIONS)
 _phone = Phone()
 _trace = Trace()
-_rec: list[tuple[str, dict]] | None = None  # calls captured between record(start) and record(stop)
-_rec_skipped = 0
-_COORDINATE_TOOLS = {"tap", "double_tap", "long_press", "swipe", "pinch", "gesture"}
-
-
-def _record(name: str, args: dict, result) -> None:
-    """Capture a successful call. Coordinate gestures are not stored: they break when the layout changes."""
-    global _rec_skipped
-    if _rec is None or not isinstance(result, str) or result.startswith(("ERROR", "BLOCKED", "NEEDS_HUMAN", "NOT FOUND")):
-        return
-    if name in _COORDINATE_TOOLS:
-        _rec_skipped += 1
-    elif name == "tap_element" and _phone.last_tap:
-        text, nth = _phone.last_tap
-        _rec.append(("tap_text", {"text": text, **({"nth": nth} if nth else {})}))
-    elif name == "tap_text":
-        _rec.append(("tap_text", {"text": args["text"], **({"nth": args["nth"]} if args.get("nth") else {})}))
-    elif name in R.RECORDABLE:
-        _rec.append((name, {k: v for k, v in args.items() if v is not None}))
+_recorder = Recorder()
 
 X = Annotated[float, Field(description="x in screenshot space")]
 Y = Annotated[float, Field(description="y in screenshot space")]
 Confirm = Annotated[bool, Field(description="true only if the user asked for this buy/pay/send/delete action")]
 
 
-def tool(fn):
-    """Register `fn` as an MCP tool. Turn device errors into text. Log name, args, time and status."""
+# ---- plumbing ----------------------------------------------------------------
+def _as_text(exc: Exception) -> tuple[str, str]:
+    """(status, result text) for a failure."""
+    if isinstance(exc, NeedsHuman):
+        return "needs_human", f"NEEDS_HUMAN: {exc}"
+    if isinstance(exc, Blocked):
+        return "blocked", f"BLOCKED: {exc}"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "error", f"ERROR: adb command timed out after {exc.timeout}s (phone locked, asleep, or adb stuck?)"
+    return "error", f"ERROR: {exc}"
+
+
+def _log(name: str, args: dict, start: float, status: str, result: Any) -> None:
+    """Write the run log and feed the recorder. A full disk must never break a tool call."""
+    size = len(result) if isinstance(result, str) else sum(len(p) for p in result if isinstance(p, str))
+    with contextlib.suppress(OSError):
+        _trace.log(name, args, (time.perf_counter() - start) * 1000, status, size)
+    if status == "ok":
+        _recorder.capture(name, args, result, _phone.last_tap)
+
+
+def tool(fn: Callable) -> Callable:
+    """Register `fn` as an MCP tool with error-to-text conversion and logging."""
     sig = inspect.signature(fn)
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        status = "ok"
+        start, status = time.perf_counter(), "ok"
         try:
             result = fn(*args, **kwargs)
-        except NeedsHuman as exc:
-            status, result = "needs_human", f"NEEDS_HUMAN: {exc}"
-        except Blocked as exc:
-            status, result = "blocked", f"BLOCKED: {exc}"
-        except DeviceError as exc:
-            status, result = "error", f"ERROR: {exc}"
-        except subprocess.TimeoutExpired as exc:
-            status, result = "error", f"ERROR: adb command timed out after {exc.timeout}s (phone locked, asleep, or adb stuck?)"
-        try:
-            bound = sig.bind_partial(*args, **kwargs).arguments
-            size = len(result) if isinstance(result, str) else sum(len(p) for p in result if isinstance(p, str))
-            _trace.log(fn.__name__, bound, (time.perf_counter() - start) * 1000, status, size)
-            if status == "ok":
-                _record(fn.__name__, dict(bound), result)
-        except OSError:
-            pass  # a full disk must never break a tool call
+        except (DeviceError, subprocess.TimeoutExpired) as exc:
+            status, result = _as_text(exc)
+        _log(fn.__name__, dict(sig.bind_partial(*args, **kwargs).arguments), start, status, result)
         return result
 
     return mcp.tool()(wrapper)
 
 
+def _package() -> str:
+    return _phone.state().app.split("/")[0]
+
+
+# ---- look ----------------------------------------------------------------------
 @tool
 def device_status() -> str:
     """Show the phone, screen size, rotation, input backend (scrcpy multi-touch or adb fallback) and foreground app."""
@@ -116,6 +116,7 @@ def screenshot():
     return Image(data=_phone.screenshot_jpeg(), format="jpeg")
 
 
+# ---- touch ---------------------------------------------------------------------
 @tool
 def tap_text(
     text: Annotated[str, Field(description="visible label to tap, case-insensitive, partial match")],
@@ -186,6 +187,7 @@ def gesture(
     return str(_phone.gesture([[(p[0], p[1]) for p in s] for s in strokes], duration_ms))
 
 
+# ---- keys, text, apps ----------------------------------------------------------
 @tool
 def type_text(text: str, submit: Annotated[bool, Field(description="press Enter afterwards")] = False) -> str:
     """Type into the focused field (tap the field first). Handles non-ASCII via clipboard paste."""
@@ -219,13 +221,14 @@ def open_url(
     return str(_phone.open_url(url, package))
 
 
+# ---- memory: notes and recipes -------------------------------------------------
 @tool
 def notes(
     add: Annotated[str | None, Field(description="one short tip to save, e.g. 'Back does not close the filter panel'")] = None,
     package: Annotated[str | None, Field(description="app package. Default: the foreground app")] = None,
 ) -> str:
     """Read the saved tips for an app, or save one. Tips are plain text kept on this Mac."""
-    pkg = package or _phone.state().app.split("/")[0]
+    pkg = package or _package()
     if add:
         return f"saved ({K.add_note(pkg, add)} bytes used for {pkg})"
     return K.get_notes(pkg) or f"(no notes for {pkg})"
@@ -239,22 +242,20 @@ def record(
     description: str = "",
 ) -> str:
     """Record the next tool calls as a recipe. Do the task once, then stop. Coordinates and typed text are never stored."""
-    global _rec, _rec_skipped
     if action == "start":
-        _rec, _rec_skipped = [], 0
+        _recorder.start()
         return "recording. Do the task, then call record(action='stop', name=..., params=...)."
     if action != "stop":
         return "ERROR: action must be start or stop"
-    if _rec is None:
+    if not _recorder.active:
         return "ERROR: not recording"
     if not name:
         return "ERROR: give a name to save the recipe"
-    calls, skipped, _rec, _rec_skipped = _rec, _rec_skipped, None, 0
+    calls, skipped = _recorder.stop()
     steps = R.compile_steps(calls, params or {})
-    app = _phone.state().app.split("/")[0]
-    K.save_recipe(name, app, description, steps)
-    need = R.required_params(steps)
-    return f"saved recipe {name!r}: {len(steps)} step(s), parameters {need}" + (f". {skipped} coordinate action(s) were not stored." if skipped else "")
+    K.save_recipe(name, _package(), description, steps)
+    note = f". {skipped} coordinate action(s) were not stored." if skipped else ""
+    return f"saved recipe {name!r}: {len(steps)} step(s), parameters {R.required_params(steps)}{note}"
 
 
 @tool
@@ -269,32 +270,20 @@ def recipes(
     return str(R.run(_phone, K.load_recipe(run)["steps"], params or {}))
 
 
+# ---- vision ------------------------------------------------------------------
 async def _look(question: str, ctx: Context) -> str:
     jpeg = await anyio.to_thread.run_sync(_phone.screenshot_jpeg)
     w, h = _phone.geo.view_size if _phone.geo else (0, 0)
     q = f"{question}\n(The image is {w}x{h} pixels. That is also the tap coordinate space.)"
-    session = ctx.session
-    if session.check_client_capability(mt.ClientCapabilities(sampling=mt.SamplingCapability())):
-        try:
-            res = await session.create_message(
-                [mt.SamplingMessage(role="user", content=mt.ImageContent(type="image", data=base64.b64encode(jpeg).decode(), mimeType="image/jpeg")),
-                 mt.SamplingMessage(role="user", content=mt.TextContent(type="text", text=q))],
-                max_tokens=V.MAX_TOKENS,
-                system_prompt=V.SYSTEM,
-                model_preferences=mt.ModelPreferences(hints=[mt.ModelHint(name="haiku"), mt.ModelHint(name="flash"), mt.ModelHint(name="mini")],
-                                                       speedPriority=0.9, costPriority=0.8, intelligencePriority=0.3),
-            )
-            text = getattr(res.content, "text", "")
-            if text:
-                return f"{text.strip()} [via host sampling, model={res.model}]"
-            note = "sampling returned no text; "
-        except Exception as exc:  # noqa: BLE001 - the client may refuse in many ways; try the next backend
-            note = f"sampling failed: {exc}; "
-    else:
-        note = "client has no sampling; "
-    if V.endpoint_config():
-        text = await anyio.to_thread.run_sync(V.ask_endpoint, q, jpeg)
-        return f"{text} [via {V.endpoint_config()[1]}]"
+    try:
+        answer = await V.ask_host(ctx.session, q, jpeg)
+        note = "" if answer else "client has no sampling; "
+    except DeviceError as exc:
+        answer, note = None, f"{exc}; "
+    if answer:
+        return answer
+    if cfg := V.endpoint_config():
+        return f"{await anyio.to_thread.run_sync(V.ask_endpoint, q, jpeg)} [via {cfg[1]}]"
     raise DeviceError(note + "no vision backend. Set DROIDPILOT_VISION_URL, or call observe(image=true) and look yourself.")
 
 
@@ -304,17 +293,13 @@ async def look(question: Annotated[str, Field(description="one question about th
     start, status = time.perf_counter(), "ok"
     try:
         out = await _look(question, ctx)
-    except NeedsHuman as exc:
-        status, out = "needs_human", f"NEEDS_HUMAN: {exc}"
     except DeviceError as exc:
-        status, out = "error", f"ERROR: {exc}"
-    try:
-        _trace.log("look", {"question": question}, (time.perf_counter() - start) * 1000, status, len(out))
-    except OSError:
-        pass
+        status, out = _as_text(exc)
+    _log("look", {"question": question}, start, status, out)
     return out
 
 
+# ---- Chrome ------------------------------------------------------------------
 @tool
 def web_read() -> str:
     """Chrome only: the front tab as text, plus a numbered list of links, buttons and fields. Faster and more exact than the UI tree for web pages."""
@@ -348,6 +333,7 @@ def web_fill(
     return f"filled {out['field']!r}" if out.get("ok") else f"ERROR: no input matching {field!r}. Call web_read."
 
 
+# ---- waiting -----------------------------------------------------------------
 @tool
 def wait(ms: Annotated[int, Field(description="max wait, 100-10000")] = 1500) -> str:
     """Wait until the screen stops changing (loading spinners, animations)."""
@@ -364,8 +350,6 @@ def wait_for(
 
 
 def run() -> None:
-    import threading
-
     threading.Thread(target=_phone.warm_up, name="droidpilot-warm-up", daemon=True).start()
     try:
         mcp.run(transport="stdio")

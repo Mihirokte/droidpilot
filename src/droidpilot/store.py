@@ -7,10 +7,11 @@ Layout under ROOT:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-ROOT = Path(os.environ.get("DROIDPILOT_HOME") or Path.home() / ".cache" / "droidpilot")
+from . import config
+
+ROOT = config.HOME
 
 
 def subdir(name: str) -> Path:

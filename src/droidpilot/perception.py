@@ -18,7 +18,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 from PIL import Image
 
-from .adb import Adb, DeviceError
+from .adb import Adb
+from .errors import DeviceError
 
 _BOUNDS = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
@@ -61,8 +62,8 @@ class UiElement:
 
     @property
     def center(self) -> tuple[int, int]:
-        l, t, r, b = self.bounds
-        return (l + r) // 2, (t + b) // 2
+        left, top, right, bottom = self.bounds
+        return (left + right) // 2, (top + bottom) // 2
 
 
 def capture(adb: Adb) -> Image.Image:
@@ -145,8 +146,8 @@ def parse_ui(xml: str) -> list[UiElement]:
         m = _BOUNDS.match(node.get("bounds") or "")
         if not m:
             continue
-        l, t, r, b = map(int, m.groups())
-        if r <= l or b <= t:
+        left, top, right, bottom = map(int, m.groups())
+        if right <= left or bottom <= top:
             continue
         elements.append(
             UiElement(
@@ -156,7 +157,7 @@ def parse_ui(xml: str) -> list[UiElement]:
                 desc=desc,
                 resource_id=(node.get("resource-id") or "").rsplit("/", 1)[-1],
                 flags=flags,
-                bounds=(l, t, r, b),
+                bounds=(left, top, right, bottom),
             )
         )
     return elements
@@ -217,7 +218,7 @@ def format_ui(elements: list[UiElement], geo: Geometry, limit: int = 120) -> str
         return "(no UI elements found: the app may draw its own UI (game/Flutter/WebView) or block the dump; use screenshot coordinates)"
     lines = []
     for e in elements[:limit]:
-        l, t, r, b = (round(v / geo.scale) for v in e.bounds)
+        left, top, right, bottom = (round(v / geo.scale) for v in e.bounds)
         cx, cy = geo.to_view(*e.center)
         label = e.text or e.desc or e.resource_id
         extras = []
@@ -226,7 +227,7 @@ def format_ui(elements: list[UiElement], geo: Geometry, limit: int = 120) -> str
         if e.resource_id and e.resource_id != label:
             extras.append(f"id={e.resource_id}")
         lines.append(
-            f"[{e.index}] {e.cls} {label[:80]!r} {','.join(e.flags)} center=({cx},{cy}) box=({l},{t},{r},{b})"
+            f"[{e.index}] {e.cls} {label[:80]!r} {','.join(e.flags)} center=({cx},{cy}) box=({left},{top},{right},{bottom})"
             + (" " + " ".join(extras) if extras else "")
         )
     if len(elements) > limit:

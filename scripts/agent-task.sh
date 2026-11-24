@@ -4,15 +4,17 @@
 # Run one task at a time: only one agent can drive a phone.
 cd "$(dirname "$0")/.."; source env.sh
 OUT=${DROIDPILOT_TASK_OUT:-/tmp/droidpilot-tasks}; mkdir -p "$OUT"
-adb shell input keyevent 3 >/dev/null; : > ~/.cache/droidpilot/traces/trace.jsonl
+TRACE="${DROIDPILOT_HOME:-$HOME/.cache/droidpilot}/traces/trace.jsonl"; mkdir -p "$(dirname "$TRACE")"
+[ $# -eq 2 ] || { echo "usage: $0 <id> \"<task>\""; exit 2; }
+adb shell input keyevent 3 >/dev/null; : > "$TRACE"
 start=$(date +%s)
-kiro-cli chat --no-interactive --trust-workspace --require-mcp-startup --agent phone --model claude-sonnet-5.5 "$2 Do not send, pay, buy, book, delete, post or sign in to anything. If a step would do one of those, stop and tell me." > $OUT/$1.log 2>&1
+kiro-cli chat --no-interactive --trust-workspace --require-mcp-startup --agent phone --model claude-sonnet-5.5 "$2 Do not send, pay, buy, book, delete, post or sign in to anything. If a step would do one of those, stop and tell me." > "$OUT/$1.log" 2>&1
 code=$?; wall=$(( $(date +%s) - start ))
-cp ~/.cache/droidpilot/traces/trace.jsonl $OUT/$1.trace.jsonl
+cp "$TRACE" "$OUT/$1.trace.jsonl"
 python3 - "$1" "$wall" "$code" "$OUT" <<'PY'
 import json, sys
 tid, wall, code, out = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
-rows = [json.loads(l) for l in open(f"$OUT/{tid}.trace.jsonl")]
+rows = [json.loads(line) for line in open(f"{out}/{tid}.trace.jsonl")]
 tools = {}
 for r in rows: tools[r["tool"]] = tools.get(r["tool"], 0) + 1
 bad = [r for r in rows if r["status"] != "ok"]

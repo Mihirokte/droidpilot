@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from . import store
-from .adb import DeviceError
+from .errors import DeviceError
 
 
 class DeviceLock:

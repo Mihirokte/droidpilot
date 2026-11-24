@@ -7,6 +7,7 @@ must equal the version of the scrcpy-server jar we push.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import random
 import socket
@@ -15,11 +16,15 @@ import threading
 import time
 from pathlib import Path
 
-from .adb import Adb, DeviceError
+from .adb import Adb
+from .errors import DeviceError
 
 SERVER_VERSION = "5.0.1"
 DEFAULT_SERVER = Path.home() / ".local/opt/scrcpy-macos-x86_64-v5.0.1/scrcpy-server"
-REMOTE_JAR = "/data/local/tmp/droidpilot-scrcpy-server.jar"
+REMOTE_DIR = "/data/local/tmp"
+REMOTE_PREFIX = "droidpilot-scrcpy-"  # one jar per launch: a dying server cannot touch the next one's file
+REMOTE_JAR = f"{REMOTE_DIR}/{REMOTE_PREFIX}*.jar"  # glob, for cleanup
+STALE_JAR_MIN = 10  # minutes
 
 # MotionEvent actions
 ACTION_DOWN, ACTION_UP, ACTION_MOVE = 0, 1, 2
@@ -80,13 +85,19 @@ class ScrcpyControl:
             return
         if not self.server_jar.exists():
             raise DeviceError(f"scrcpy-server jar not found at {self.server_jar}")
-        self.adb.run("push", str(self.server_jar), REMOTE_JAR)
         scid = random.randint(1, 0x7FFFFFFF)
+        jar = f"{REMOTE_DIR}/{REMOTE_PREFIX}{scid:08x}.jar"
+        # Servers killed by their host never remove their jar. Delete jars older than STALE_JAR_MIN
+        # (a live server's jar is newer, and a running server keeps its jar open anyway).
+        with contextlib.suppress(DeviceError):
+            self.adb.shell(f"find {REMOTE_DIR} -maxdepth 1 -name '{REMOTE_PREFIX}*.jar' -mmin +{STALE_JAR_MIN} -delete")
+        self.adb.run("push", str(self.server_jar), jar)
+        self._jar = jar
         socket_name = f"scrcpy_{scid:08x}"
         port_text = self.adb.run("forward", "tcp:0", f"localabstract:{socket_name}").strip()
         self._port = int(port_text)
         command = (
-            f"CLASSPATH={REMOTE_JAR} app_process / com.genymobile.scrcpy.Server {SERVER_VERSION} "
+            f"CLASSPATH={jar} app_process / com.genymobile.scrcpy.Server {SERVER_VERSION} "
             f"scid={scid:08x} log_level=info video=false audio=false control=true "
             "tunnel_forward=true cleanup=false send_device_meta=false"
         )
@@ -136,17 +147,17 @@ class ScrcpyControl:
 
     def stop(self) -> None:
         if self._sock:
-            try:
+            with contextlib.suppress(OSError):
                 self._sock.close()
-            except OSError:
-                pass
             self._sock = None
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
         self._proc = None
+        if getattr(self, "_jar", None):
+            with contextlib.suppress(DeviceError):
+                self.adb.shell(f"rm -f {self._jar}")
+            self._jar = None
         if self._port is not None:
-            try:
+            with contextlib.suppress(DeviceError):
                 self.adb.run("forward", "--remove", f"tcp:{self._port}")
-            except DeviceError:
-                pass
             self._port = None

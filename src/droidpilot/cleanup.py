@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from pathlib import Path
 
 from . import store
-from .adb import Adb, DeviceError, find_adb, list_devices
+from .adb import Adb, find_adb, list_devices
+from .errors import DeviceError
 from .scrcpy import REMOTE_JAR
 
 HOME_OPT = Path.home() / ".local/opt"
@@ -25,11 +27,9 @@ def clean_device(adb: Adb) -> list[str]:
         done.append("stopped stale scrcpy servers on phone")
     except DeviceError:
         pass
-    try:
+    with contextlib.suppress(DeviceError):
         adb.shell("pkill -f u2.jar")  # uiautomator2 server, if the fast tree backend started it
-    except DeviceError:
-        pass
-    adb.shell(f"rm -f {REMOTE_JAR}")
+    adb.shell(f"rm -f {REMOTE_JAR}")  # every per-launch jar
     done.append(f"removed {REMOTE_JAR} from phone")
     adb.shell("rm -rf /data/local/tmp/u2 /data/local/tmp/u2.jar")
     done.append("removed uiautomator2 files (u2.jar) from phone")

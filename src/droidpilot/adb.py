@@ -8,17 +8,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import Blocked, DeviceError, NeedsHuman
 
-class DeviceError(RuntimeError):
-    """Raised when the phone is missing, unauthorised, or a device command fails."""
-
-
-class NeedsHuman(DeviceError):
-    """A step only the user can do (PIN, CAPTCHA, OTP). The agent must stop and ask."""
-
-
-class Blocked(DeviceError):
-    """The safety guard refused an action. The agent may repeat it with confirm=true."""
+__all__ = ["Adb", "AdbDevice", "Blocked", "DeviceError", "NeedsHuman", "find_adb", "list_devices"]
 
 
 def find_adb() -> str:

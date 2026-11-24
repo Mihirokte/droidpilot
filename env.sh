@@ -1,5 +1,5 @@
 # Source this file: `source env.sh`
-# Tools are installed user-local (no sudo) in ~/.local/opt.
+# adb and scrcpy are installed per user (no sudo) in ~/.local/opt. Change the paths if yours differ.
 export ANDROID_PT="$HOME/.local/opt/platform-tools"
 export SCRCPY_DIR="$HOME/.local/opt/scrcpy-macos-x86_64-v5.0.1"
 export ADB="$ANDROID_PT/adb"            # scrcpy honours $ADB, so both use one adb server

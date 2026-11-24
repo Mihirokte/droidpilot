@@ -10,6 +10,7 @@ fill a field. Touch tools still work on the same page. This is a supplement, not
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import re
@@ -17,7 +18,8 @@ import socket
 import struct
 from dataclasses import dataclass
 
-from .adb import Adb, DeviceError
+from .adb import Adb
+from .errors import DeviceError
 
 SOCKET = "chrome_devtools_remote"
 MAX_TEXT = 6000  # characters of page text returned to the agent
@@ -106,10 +108,8 @@ class WebSocket:
                 return b"".join(parts).decode("utf-8", errors="replace")
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(OSError):
             self.sock.close()
-        except OSError:
-            pass
 
 
 # ---- page scripts (run in the page; return JSON-able values) ----------------
@@ -238,10 +238,8 @@ class Chrome:
             finally:
                 ws.close()
         finally:
-            try:
+            with contextlib.suppress(DeviceError):
                 self.adb.run("forward", "--remove", f"tcp:{port}")
-            except DeviceError:
-                pass
         result = msg.get("result", {})
         if "exceptionDetails" in result:
             raise DeviceError(f"page script failed: {result['exceptionDetails'].get('text', 'error')}")

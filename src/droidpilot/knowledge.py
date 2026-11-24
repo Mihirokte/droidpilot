@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from . import store
-from .adb import DeviceError
+from .errors import DeviceError
 
 MAX_NOTE_BYTES = 4_000  # per app. Notes are loaded into the agent context, so keep them short.
 MAX_TOTAL_BYTES = 2_000_000

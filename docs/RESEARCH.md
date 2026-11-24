@@ -26,7 +26,7 @@ Sources are arXiv abstract pages and READMEs fetched in this project's sessions.
 
 ## Patterns that recur across the strong systems
 
-1. **Reflection after every action.** Mobile-Agent-v2 and -E both add an explicit check of what the action did. We have the cheap version built in: `screen_changed` plus settle time on every tool result.
+1. **Reflection after every action.** Mobile-Agent-v2 and -E both add an explicit check of what the action did. droidpilot's version: `observe` reports `changed=yes/NO` and what changed.
 2. **Persistent skills from experience.** AppAgent (knowledge base), Mobile-Agent-E (Shortcuts, Tips), AutoDroid (app memory). Nobody ships this as a model-agnostic layer you can bolt onto any coding agent.
 3. **Grounding is the weak link for vision-only agents** (SeeClick, Ferret-UI, OS-Atlas, UI-TARS, Aguvis all attack it). An accessibility tree sidesteps grounding where it exists. Both are needed: the tree fails on games, WebViews and Flutter.
 4. **Benchmarks use emulators.** AndroidWorld and AndroidLab assume AVDs. Real-device results are rarer, and real phones have OEM quirks (realme permission gate).
@@ -35,11 +35,11 @@ Sources are arXiv abstract pages and READMEs fetched in this project's sessions.
 
 Existing agents bundle the model, the loop and the device layer. Here the model is whatever coding agent the user already runs (Claude, Codex, Gemini, Kiro), so the product is the **device layer**: complete touch vocabulary, honest feedback after each action, and memory. The agent's own reasoning supplies planning and reflection.
 
-## Roadmap, in priority order
+## Where this went
 
-1. Real-phone validation (blocked on USB debugging; see README).
-2. Latency: verification costs 3+ screenshots per action (~6 s on the emulator at 1.5 s per `screencap`). Options: scrcpy H.264 video stream instead of `screencap`, optional `verify=false`.
-3. Skill recorder and replayer (Mobile-Agent-E Shortcuts idea): log successful action sequences keyed by app and goal, expose as `list_skills` / `run_skill`, fall back to the agent on divergence.
-4. Per-app notes (Tips): short persisted text returned by `observe` for the current package.
-5. Grounding fallback for tree-less screens: optional call to a grounding model (OS-Atlas / UI-TARS class) behind one tool. Not needed while the host agent has vision.
-6. Benchmark: run a subset of AndroidWorld tasks on the emulator through MCP with each host agent, report success rate and steps.
+Each pattern above became a feature. See [HISTORY.md](HISTORY.md) for when and with what result:
+
+- Reflection after every action: `observe` reports `changed=yes/NO` and a diff.
+- Persistent skills: `record` and `recipes` (Mobile-Agent-E Shortcuts), `notes` (Tips).
+- Grounding: the UI tree first; `look()` and screenshots for tree-less screens.
+- Real devices: tested on a realme 9, with its OEM quirks.

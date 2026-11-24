@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import urllib.request
 
-from .adb import DeviceError
+from . import config
+from .errors import DeviceError
 
 SYSTEM = (
     "You look at one Android phone screenshot and answer one question. "
@@ -27,12 +27,12 @@ MAX_TOKENS = 200
 
 
 def endpoint_config() -> tuple[str, str, str] | None:
-    url = os.environ.get("DROIDPILOT_VISION_URL", "").strip()
+    url = config.VISION_URL
     if not url:
         return None
     if not url.startswith(("http://127.0.0.1", "http://localhost", "https://")):
         raise DeviceError("DROIDPILOT_VISION_URL must be https, or http on localhost")
-    return url, os.environ.get("DROIDPILOT_VISION_MODEL", "llava"), os.environ.get("DROIDPILOT_VISION_KEY", "")
+    return url, config.VISION_MODEL, config.VISION_KEY
 
 
 def build_request(model: str, question: str, jpeg: bytes) -> dict:
@@ -69,7 +69,35 @@ def ask_endpoint(question: str, jpeg: bytes, timeout: float = 60) -> str:
     if key:
         req.add_header("Authorization", f"Bearer {key}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (scheme checked above)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return parse_response(json.loads(resp.read().decode()))
     except OSError as exc:
         raise DeviceError(f"vision endpoint failed: {exc}") from exc
+
+
+async def ask_host(session, question: str, jpeg: bytes) -> str | None:
+    """Ask the agent's own client for a small model through MCP sampling.
+    Return the answer, or None if the client has no sampling. Raise DeviceError if sampling failed."""
+    import mcp.types as mt  # local: keeps the pure helpers above importable without the MCP SDK
+
+    if not session.check_client_capability(mt.ClientCapabilities(sampling=mt.SamplingCapability())):
+        return None
+    try:
+        res = await session.create_message(
+            [
+                mt.SamplingMessage(role="user", content=mt.ImageContent(type="image", data=base64.b64encode(jpeg).decode(), mimeType="image/jpeg")),
+                mt.SamplingMessage(role="user", content=mt.TextContent(type="text", text=question)),
+            ],
+            max_tokens=MAX_TOKENS,
+            system_prompt=SYSTEM,
+            model_preferences=mt.ModelPreferences(
+                hints=[mt.ModelHint(name="haiku"), mt.ModelHint(name="flash"), mt.ModelHint(name="mini")],
+                speedPriority=0.9, costPriority=0.8, intelligencePriority=0.3,
+            ),
+        )
+    except Exception as exc:
+        raise DeviceError(f"sampling failed: {exc}") from exc
+    text = (getattr(res.content, "text", "") or "").strip()
+    if not text:
+        raise DeviceError("sampling returned no text")
+    return f"{text} [via host sampling, model={res.model}]"

@@ -1,7 +1,9 @@
 [project]
 name = "droidpilot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Full-touch Android control for AI agents over MCP"
+license = "MIT"
+keywords = ["android", "mcp", "automation", "ai-agent", "scrcpy", "adb"]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -25,4 +27,28 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "ruff>=0.8",
 ]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 150
+target-version = "py312"
+
+[tool.ruff.lint]
+# F pyflakes, E/W style, I imports, B bugbear, UP pyupgrade, SIM simplify, RUF ruff, PL pylint errors
+select = ["F", "E", "W", "I", "B", "UP", "SIM", "RUF", "PLE"]
+ignore = [
+    "E501",    # long tool descriptions are read by agents, not people
+    "UP007",
+    "RUF001", "RUF002", "RUF003",  # ₹ and other non-ASCII in strings and comments are intended
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

@@ -5,7 +5,6 @@ Imperative shell. The decisions live in pure modules: snapshot, guard, state, pe
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -13,34 +12,25 @@ from dataclasses import dataclass, replace
 
 from PIL import Image
 
+from . import config
+from . import gestures as GE
 from . import guard as G
 from . import knowledge as K
-from . import recipes as R
 from . import perception as P
+from . import recipes as R
 from . import scrcpy as S
 from . import snapshot as SN
 from . import state as ST
-from .adb import Adb, Blocked, DeviceError, NeedsHuman, list_devices
+from .adb import Adb, list_devices
 from .devlock import DeviceLock
+from .errors import Blocked, DeviceError, NeedsHuman
 from .fasttree import FastTree
 
-KEYCODES = {
-    "home": 3, "back": 4, "call": 5, "endcall": 6, "volume_up": 24, "volume_down": 25,
-    "power": 26, "camera": 27, "tab": 61, "space": 62, "enter": 66, "delete": 67,
-    "backspace": 67, "menu": 82, "search": 84, "recents": 187, "app_switch": 187,
-    "escape": 111, "forward_delete": 112, "page_up": 92, "page_down": 93,
-    "dpad_up": 19, "dpad_down": 20, "dpad_left": 21, "dpad_right": 22, "dpad_center": 23,
-    "wakeup": 224, "sleep": 223, "mute": 164, "notifications": 83,
-}
-
-TREE = os.environ.get("DROIDPILOT_TREE", "auto")  # auto | shell | u2
-COMPACT = os.environ.get("DROIDPILOT_COMPACT", "1") != "0"  # merge card children into one line
-VERIFY = os.environ.get("DROIDPILOT_VERIFY", "off")  # off: fixed wait | full: screenshot diff loop
-SETTLE_MS = int(os.environ.get("DROIDPILOT_SETTLE_MS", "400"))
 FRAME_MS = 16  # ~60 Hz touch sampling
 READY_TTL = 15.0  # seconds before the wake/lock check runs again
 SNAPSHOT_TTL = 3.0  # seconds a snapshot may be reused by tap_text
 GUARD_TTL = 30.0  # seconds a snapshot may be used to name the element under a raw tap
+SCRCPY_RETRY_S = 30.0  # after a failed scrcpy start, try again after this long
 
 
 @dataclass
@@ -57,8 +47,8 @@ class Outcome:
 
 class Phone:
     def __init__(self, serial: str | None = None) -> None:
-        self._requested_serial = serial or os.environ.get("DROIDPILOT_SERIAL")
-        self.view_long_side = int(os.environ.get("DROIDPILOT_VIEW_LONG_SIDE", "1600"))
+        self._requested_serial = serial or config.SERIAL
+        self.view_long_side = config.VIEW_LONG_SIDE
         self.adb: Adb | None = None
         self.control: S.ScrcpyControl | None = None
         self.geo: P.Geometry | None = None
@@ -72,6 +62,7 @@ class Phone:
         self._state: ST.DeviceState | None = None
         self._ready_at = 0.0
         self._wakes = 0
+        self._scrcpy_retry_at = 0.0
         self._lock: DeviceLock | None = None
         self._connect_mutex = threading.Lock()  # warm-up and the first tool call both connect
         self.last_tap: tuple[str, int] | None = None  # (text, nth) of the last tapped element, for recording
@@ -91,7 +82,7 @@ class Phone:
         if self._requested_serial:
             ready = [d for d in ready if d.serial == self._requested_serial]
         if not ready:
-            raise DeviceError(self._no_device_hint(devices))
+            raise DeviceError(self.no_device_hint(devices))
         adb = Adb(ready[0].serial)  # may raise (no adb binary): before the lock, so nothing leaks
         lock = DeviceLock(ready[0].serial)
         lock.acquire()  # raises DeviceError if another droidpilot holds this phone
@@ -99,7 +90,7 @@ class Phone:
         return adb
 
     @staticmethod
-    def _no_device_hint(devices: list) -> str:
+    def no_device_hint(devices: list) -> str:
         if not devices:
             return (
                 "No Android device visible to adb. On the phone: enable Developer options > USB debugging "
@@ -111,22 +102,30 @@ class Phone:
         )
 
     def _control(self) -> S.ScrcpyControl | None:
-        """Start scrcpy control once; fall back to `adb shell input` if it cannot start."""
+        """The scrcpy control socket, or None for the `adb shell input` fallback (no multi-touch).
+
+        A start is tried twice. After a failure, scrcpy is tried again after SCRCPY_RETRY_S, so one bad
+        moment (for example a server that is still shutting down) does not cost multi-touch for the session."""
         adb = self.connect()
         if self.control and self.control.connected:
             return self.control
-        if self.input_backend == "adb-input":
+        if self.input_backend == "adb-input" and time.monotonic() < self._scrcpy_retry_at:
             return None
-        try:
-            ctl = S.ScrcpyControl(adb)
-            ctl.start()
-            self.control = ctl
-            self.input_backend = "scrcpy"
-            return ctl
-        except DeviceError as exc:
-            self.input_backend = "adb-input"
-            self.backend_note = f"scrcpy unavailable ({exc}); using adb input fallback (no multi-touch)"
-            return None
+        last: DeviceError | None = None
+        for attempt in range(2):
+            try:
+                ctl = S.ScrcpyControl(adb)
+                ctl.start()
+                self.control, self.input_backend, self.backend_note = ctl, "scrcpy", ""
+                return ctl
+            except DeviceError as exc:
+                last = exc
+                if attempt == 0:
+                    time.sleep(0.5)
+        self.input_backend = "adb-input"
+        self._scrcpy_retry_at = time.monotonic() + SCRCPY_RETRY_S
+        self.backend_note = f"scrcpy unavailable ({last}); using adb input fallback (no multi-touch)"
+        return None
 
     # ---- device state -----------------------------------------------------
     def state(self) -> ST.DeviceState:
@@ -194,7 +193,7 @@ class Phone:
         try:
             self.connect()
             self._control()
-            if TREE != "shell" and self._fast is None:
+            if config.TREE != "shell" and self._fast is None:
                 self._fast = FastTree(self.connect().serial)
                 self.tree_backend = "u2"
         except DeviceError:
@@ -204,7 +203,7 @@ class Phone:
     def _tree_xml(self) -> str:
         """UI hierarchy XML from the fastest backend that works. Fall back to the shell dump."""
         adb = self.connect()
-        if TREE != "shell" and self.tree_backend in ("unconnected", "u2"):
+        if config.TREE != "shell" and self.tree_backend in ("unconnected", "u2"):
             try:
                 if self._fast is None:
                     self._fast = FastTree(adb.serial)
@@ -242,7 +241,7 @@ class Phone:
             xml = self._tree_xml()
         assert self.geo
         full = P.parse_ui(xml)
-        els = P.compact(full, self.geo.width, self.geo.height) if COMPACT else full
+        els = P.compact(full, self.geo.width, self.geo.height) if config.COMPACT else full
         if any({"edit", "focused"} <= set(e.flags) for e in els):  # only then is the keyboard query worth 0.65 s
             kb = "mInputShown=true" in self.connect().shell(ST.KEYBOARD_PROBE, timeout=15)
             st = replace(st, keyboard=kb)
@@ -251,19 +250,8 @@ class Phone:
         d = SN.diff(prev, snap) if prev else None
         self.snapshot, self._snap_time, self.elements = snap, time.monotonic(), list(els)
 
-        w, h = self.geo.view_size
-        head = f"snapshot={snap.id} screen={w}x{h} {st.banner()}"
         pkg = st.app.split("/")[0] if st.app else ""
-        if pkg and K.has_notes(pkg):
-            head += "\nnotes: saved for this app. Call notes() to read them."
-        if pkg == "com.android.chrome":
-            head += "\nhint: Chrome is in front. web_read gives the exact page text and links faster than this list."
-        if d is None:
-            head += "\nchanged=first observe"
-        elif not d.changed:
-            head += "\nchanged=NO (same screen as the previous snapshot)"
-        else:
-            head += f"\nchanged=yes (+{len(d.added)} new labels, -{len(d.removed)} gone)"
+        head = SN.header(snap, d, self.geo.view_size, st.banner(), bool(pkg) and K.has_notes(pkg))
         if diff_only and d and d.changed and prev and prev.app == snap.app:
             body = P.format_ui(list(d.added), self.geo)
             if d.removed:
@@ -275,10 +263,10 @@ class Phone:
     def _acting(self, label: str, fn) -> Outcome:
         """Run `fn` (injects input). Default: fixed short wait. DROIDPILOT_VERIFY=full: screenshot diff loop."""
         self._ready()
-        if VERIFY != "full":
+        if config.VERIFY != "full":
             fn()
-            time.sleep(SETTLE_MS / 1000)
-            return Outcome(label, None, SETTLE_MS)
+            time.sleep(config.SETTLE_MS / 1000)
+            return Outcome(label, None, config.SETTLE_MS)
         before = P.signature(self.grab())
         fn()
         start = time.monotonic()
@@ -333,43 +321,25 @@ class Phone:
             self._perform_fallback(dev_paths, duration_ms)
             return
 
-        def at(path: list[tuple[int, int]], t: float) -> tuple[int, int]:
-            if len(path) == 1:
-                return path[0]
-            pos = t * (len(path) - 1)
-            i = min(int(pos), len(path) - 2)
-            f = pos - i
-            (x0, y0), (x1, y1) = path[i], path[i + 1]
-            return round(x0 + (x1 - x0) * f), round(y0 + (y1 - y0) * f)
-
         def send(action: int, finger: int, pos: tuple[int, int], pressure: float) -> None:
             ctl.send(S.encode_touch(action, finger, pos[0], pos[1], geo.width, geo.height, pressure))
 
         for i, path in enumerate(dev_paths):
             send(S.ACTION_DOWN, i, path[0], 1.0)
-        steps = max(1, duration_ms // FRAME_MS)
+        steps = GE.steps_for(duration_ms, FRAME_MS)
         t0 = time.monotonic()
         for step in range(1, steps + 1):
             time.sleep(max(0.0, t0 + step * FRAME_MS / 1000 - time.monotonic()))
             t = step / steps
             for i, path in enumerate(dev_paths):
-                send(S.ACTION_MOVE, i, at(path, t), 1.0)
+                send(S.ACTION_MOVE, i, GE.point_at(path, t), 1.0)
         for i, path in enumerate(dev_paths):
-            send(S.ACTION_UP, i, at(path, 1.0), 0.0)
+            send(S.ACTION_UP, i, GE.point_at(path, 1.0), 0.0)
 
     def _perform_fallback(self, dev_paths: list[list[tuple[int, int]]], duration_ms: int) -> None:
-        adb = self.connect()
         if len(dev_paths) != 1:
             raise DeviceError("multi-touch needs the scrcpy backend, which failed to start: " + self.backend_note)
-        path = dev_paths[0]
-        (x0, y0), (x1, y1) = path[0], path[-1]
-        if len(path) == 1 or (x0, y0) == (x1, y1):
-            if duration_ms > 200:
-                adb.shell(f"input swipe {x0} {y0} {x0} {y0} {duration_ms}")
-            else:
-                adb.shell(f"input tap {x0} {y0}")
-        else:
-            adb.shell(f"input swipe {x0} {y0} {x1} {y1} {duration_ms}")
+        self.connect().shell(GE.fallback_command(dev_paths[0], duration_ms))
 
     def _check_guard(self, x: float, y: float, confirm: bool) -> None:
         """Refuse a tap on a buy/pay/send/delete element unless confirm=True."""
@@ -441,27 +411,14 @@ class Phone:
         """Reveal content in `direction` (down = see content below = finger moves up)."""
         self._ready()
         assert self.geo
-        w, h = self.geo.view_size
-        cx, cy = w / 2, h / 2
-        dx, dy = {"down": (0, -1), "up": (0, 1), "right": (-1, 0), "left": (1, 0)}[direction]
-        span = amount * (h if dx == 0 else w)
-        start = (cx - dx * span / 2, cy - dy * span / 2)
-        end = (cx + dx * span / 2, cy + dy * span / 2)
-        return self.swipe(start[0], start[1], end[0], end[1], duration_ms)
+        (x1, y1), (x2, y2) = GE.scroll_path(direction, amount, *self.geo.view_size)
+        return self.swipe(x1, y1, x2, y2, duration_ms)
 
     def pinch(self, x: float, y: float, scale: float, duration_ms: int = 400) -> Outcome:
         """scale > 1 zooms in (fingers spread), < 1 zooms out."""
         self._ready()
         assert self.geo
-        w, h = self.geo.view_size
-        base = 0.15 * min(w, h)
-        start_d, end_d = base, base * scale
-        if scale >= 1:
-            end_d = min(end_d, 0.45 * w)
-        paths = [
-            [(x - start_d, y), (x - end_d, y)],
-            [(x + start_d, y), (x + end_d, y)],
-        ]
+        paths = GE.pinch_paths(x, y, scale, *self.geo.view_size)
         return self._acting(f"pinched at ({x:.0f},{y:.0f}) scale={scale}", lambda: self._perform(paths, duration_ms))
 
     def gesture(self, strokes: list[list[tuple[float, float]]], duration_ms: int = 400) -> Outcome:
@@ -481,7 +438,7 @@ class Phone:
             else:
                 ctl.send(S.encode_set_clipboard(text, paste=True))
             if submit:
-                self._key(KEYCODES["enter"])
+                self._key(GE.KEYCODES["enter"])
 
         return self._acting(f"typed {len(text)} chars", run)
 
@@ -495,9 +452,9 @@ class Phone:
 
     def press_key(self, name: str) -> Outcome:
         key = name.lower()
-        if key not in KEYCODES:
-            raise DeviceError(f"unknown key {name!r}; known: {', '.join(sorted(KEYCODES))}")
-        return self._acting(f"pressed {key}", lambda: self._key(KEYCODES[key]))
+        if key not in GE.KEYCODES:
+            raise DeviceError(f"unknown key {name!r}; known: {', '.join(sorted(GE.KEYCODES))}")
+        return self._acting(f"pressed {key}", lambda: self._key(GE.KEYCODES[key]))
 
     def open_app(self, package: str) -> Outcome:
         adb = self.connect()
@@ -511,7 +468,7 @@ class Phone:
 
     def open_url(self, url: str, package: str | None = None) -> Outcome:
         """Open a link in an app (a deep link when the app handles it). Only safe schemes are allowed."""
-        if not url.split(":", 1)[0].lower() in {"http", "https", "geo", "mailto", "tel", "sms", "smsto", "market"}:
+        if url.split(":", 1)[0].lower() not in {"http", "https", "geo", "mailto", "tel", "sms", "smsto", "market"}:
             raise DeviceError("open_url allows http, https, geo, mailto, tel, sms, smsto and market links only")
         adb = self.connect()
 

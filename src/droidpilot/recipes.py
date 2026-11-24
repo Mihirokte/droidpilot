@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from . import snapshot as SN
-from .adb import DeviceError
+from .errors import DeviceError
 from .perception import UiElement
 
 RECORDABLE = {"open_url", "open_app", "tap_text", "type_text", "press_key", "scroll", "wait_for"}

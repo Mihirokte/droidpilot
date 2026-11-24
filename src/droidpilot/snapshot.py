@@ -58,9 +58,32 @@ def diff(old: Snapshot, new: Snapshot) -> Diff:
     return Diff(True, added, removed)
 
 
+CHROME = "com.android.chrome"
+
+
+def change_line(d: Diff | None) -> str:
+    if d is None:
+        return "changed=first observe"
+    if not d.changed:
+        return "changed=NO (same screen as the previous snapshot)"
+    return f"changed=yes (+{len(d.added)} new labels, -{len(d.removed)} gone)"
+
+
+def header(snap: Snapshot, d: Diff | None, view_size: tuple[int, int], banner: str, has_notes: bool) -> str:
+    """First lines of an observe result: ids, state, hints, and what changed. Pure."""
+    w, h = view_size
+    lines = [f"snapshot={snap.id} screen={w}x{h} {banner}"]
+    if has_notes:
+        lines.append("notes: saved for this app. Call notes() to read them.")
+    if snap.app.split("/")[0] == CHROME:
+        lines.append("hint: Chrome is in front. web_read gives the exact page text and links faster than this list.")
+    lines.append(change_line(d))
+    return "\n".join(lines)
+
+
 def _area(e: UiElement) -> int:
-    l, t, r, b = e.bounds
-    return (r - l) * (b - t)
+    left, top, right, bottom = e.bounds
+    return (right - left) * (bottom - top)
 
 
 def find(snap: Snapshot, text: str) -> list[UiElement]:

@@ -7,7 +7,9 @@ It pushes `u2.jar` to /data/local/tmp. droidpilot clean removes it.
 
 from __future__ import annotations
 
-from .adb import DeviceError
+import contextlib
+
+from .errors import DeviceError
 
 
 class FastTree:
@@ -29,7 +31,5 @@ class FastTree:
             raise DeviceError(f"uiautomator2 dump failed: {exc}") from exc
 
     def stop(self) -> None:
-        try:
+        with contextlib.suppress(Exception):  # best effort at shutdown
             self._d.stop_uiautomator()
-        except Exception:  # best effort at shutdown
-            pass

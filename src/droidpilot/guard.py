@@ -7,8 +7,9 @@ and labels common in Indian apps (UPI, Pay, Book ticket, Place order).
 
 from __future__ import annotations
 
-import os
 import re
+
+from . import config
 
 RISKY = re.compile(
     r"\b("
@@ -33,12 +34,11 @@ SAFE = re.compile(
     r"view (cart|bag|orders?)|go to cart|your orders?|order history|track (order|package)|booking history)",
     re.IGNORECASE,
 )
-ENABLED = os.environ.get("DROIDPILOT_GUARD", "on") != "off"
 
 
 def check(label: str | None) -> str | None:
     """Return the risky phrase found in `label`, or None."""
-    if not ENABLED or not label:
+    if not config.GUARD or not label:
         return None
     # Labels from the tree are "a | b | c" (text, description, id). Judge each part on its own.
     for segment in label.split("|"):

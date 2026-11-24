@@ -17,8 +17,8 @@ One better solution replaces several ideas. We build the better one only.
 | Video-packet change signal (A2) | **Dropped for now** | `observe` now costs 0.4 to 0.8 s, so asking the screen directly is as cheap as listening to the video stream. Revisit only if fixed waits cause many missed loads. |
 | Decode video frames as screenshots | **Deferred** | Only `look()` needs pixels. A2 needs no decoding. |
 | Edge-swipe and shade tools | **Dropped** | Key presses already cover back, home and recents. |
-| Tool groups and profiles | **Dropped** | Measured: all 17 tool definitions cost about 1,500 tokens. The real cost is the `observe` output. |
-| Big architecture rewrite | **Dropped** | Each change is built as a small pure module. No second rewrite. |
+| Tool groups and profiles | **Dropped** | Measured: 17 tool definitions cost about 1,500 tokens (now 26 tools, about 2,900). The real cost is the `observe` output on every step. |
+| Big architecture rewrite | **Dropped** | Each change was built as a small pure module. One cleanup pass at the end (round 7) moved code without changing the tools. |
 | Wireless adb, iOS | **Out of scope** | |
 
 Shared building blocks (built once):
@@ -31,8 +31,8 @@ Shared building blocks (built once):
 
 |  | **High impact** | **Medium or low impact** |
 |---|---|---|
-| **Low effort (S, M)** | **Quick wins. Done.** Snapshot ids, risky-tap guard, lazy screenshot, fixed-wait actions, auto-wake and banner, `tap_text`, run log | **Fill-ins.** `observe` diff (done), `wait_for` (done), `open_url` (S, next), CI and SECURITY.md (done) |
-| **High effort (L)** | **Big bets.** Fast UI tree (A5), video-packet change signal (A2), recipes | **Later.** `look()` with a small model, Chrome DevTools for web pages, video-frame screenshots |
+| **Low effort (S, M)** | **Quick wins. All done.** Snapshot ids, risky-tap guard, lazy screenshot, fixed-wait actions, auto-wake and banner, `tap_text`, run log | **Fill-ins. All done.** `observe` diff, `wait_for`, `open_url`, CI, SECURITY.md |
+| **High effort (L)** | **Big bets. Done or dropped.** Fast UI tree (done), recipes (done), video-packet signal (dropped) | **Later. Done.** `look()`, Chrome DevTools. Video-frame screenshots stay deferred. |
 
 ## Status
 
@@ -54,65 +54,19 @@ Shared building blocks (built once):
 | -- | `open_url` tool | S | Medium | **Done.** Only safe link schemes. |
 | -- | `look(question)` small-model plug-in | M | Medium | **Done.** MCP sampling first (asks for a small model), then any OpenAI-compatible endpoint. |
 | -- | Chrome DevTools for web pages | L | Medium | **Done.** `web_read` 0.12 s, `web_click` 0.14 s. No install. Guard applies. |
-| -- | Real agent end to end | M | High | **Done.** Kiro CLI, 3 tasks, all correct. See README. |
+| -- | Real agent end to end | M | High | **Done.** Kiro CLI, 15 runs over 11 apps. See README. |
+| -- | Daily tasks for India, safety retest | M | High | **Done.** Guard extended to checkout, pay, UPI, booking. Per-phone lock. |
+| -- | Refactor and cleanup | M | Medium | **Done.** Same 26 tools. See HISTORY.md round 7. |
 | -- | Warm-up at server start | S | Medium | **Done.** First `observe` 7.6 s to 1.2 s. |
 
-## Measured effect of the first batch (realme 9)
+## Open items
 
-| Call | Before | After |
-|---|---|---|
-| Key press or tap | 4.8 to 6.1 s (checked) | **0.41 s** |
-| `tap_text` | observe + tap, two calls | **0.23 to 0.46 s**, one call |
-| Scroll | about 5 s | **0.75 s** |
-| `observe` | about 5.4 s (tree + screenshot + app name) | **3.0 to 3.9 s** (tree only) |
-| Start from a locked, asleep phone | manual, failed twice | automatic |
+| Item | Why it is open |
+|---|---|
+| Signed-in tasks (UPI history, Gmail, Keep) | No account on the test phone. Not signed in on purpose. |
+| Apps not on the test phone (WhatsApp, Swiggy, Zomato, Blinkit, Zepto, IRCTC, cab apps) | Install, then run the 5 tests in [DAILY_APPS_INDIA.md](DAILY_APPS_INDIA.md). |
+| Claude Code and Codex as host agents | Not logged in on the test Mac. Only Kiro CLI is tested. |
+| A real vision model for `look()` | Tested with a stub model only. Kiro's client does not support MCP sampling. |
+| Video-packet change signal | Dropped for now (see above). Revisit if fixed waits miss slow screens. |
 
-`observe` is now limited by the UI dump (2.7 s floor). That is A5.
-
-Not measured: the end-to-end time of the Amazon task after these changes. We should run it again after A5.
-
-## Measured effect of the second batch (realme 9)
-
-| Call | Before | After |
-|---|---|---|
-| `observe` | 3.0 to 4.5 s | **0.4 to 0.8 s** (one-time server start: about 2.3 s) |
-| State probe | 0.98 s, run first | runs at the same time as the tree dump. The keyboard query (0.65 s) now runs only when a text field has focus. |
-| Replay of a recorded 2-step recipe | n/a | 3.4 s, with new parameters |
-
-The fast tree needs `pip install 'droidpilot[fast]'`. It installs no app on the phone. It pushes `u2.jar` to `/data/local/tmp`. `droidpilot clean` removes it.
-
-## Live task result
-
-Task: put a black pair of jeans from a global brand, under 2,000 rupees, in the Amazon cart. No order.
-
-- Result: **done**. Cart holds Jack & Jones Men's Regular Fit Low Rise Black Jeans, 1,439 rupees, size 30W/32L, quantity 1. Nothing was ordered.
-- Levi's 511 in Black was found at 1,704 rupees, but only size 28 was in stock.
-- With the deep link and the new tools, the search took 4 calls. The first attempt took about 59 calls and did not finish.
-- Two bugs found by the live run and fixed: (1) Amazon names its add-to-cart and buy buttons "Submit". Only the element id says what they do. Lookup and the guard now read the id too. (2) The guard now names the element it blocked.
-- The live guard test refused a tap on the Buy button.
-
-## Agent runs (Kiro CLI, Claude Sonnet 5.5)
-
-| Task | Wall time | Calls | Tool time | Result |
-|---|---|---|---|---|
-| Android version in Settings | 32 s | 6 | 9.7 s | Correct |
-| Weather in Chrome | 31 s | 4 | 8.1 s | Correct. The agent chose `open_url` itself. |
-| Amazon cart read + jeans search, no changes | 98 s | 17 | 27.4 s | Correct. Cart unchanged. |
-
-Most of the wall time is now the model, not the phone.
-
-Findings from these runs, all fixed:
-- Kiro skips the MCP servers of an untrusted folder in headless mode. Use `--trust-workspace`.
-- The run log hid the text of every `tap_text`. Now it hides only typed text and form values.
-- The agent used screenshots on a Chrome page. `observe` now says that `web_read` is faster there.
-- The first `observe` paid 7.6 s to start the fast tree server. The server now starts it in the background.
-
-## Not done, on purpose
-
-- No model is bundled. `look` uses the host or an endpoint you choose.
-- No iOS. No wireless adb.
-- The video-packet change signal stays dropped. `observe` is cheap enough.
-
-## Daily-task round (see DAILY_APPS_INDIA.md)
-
-12 tasks over 10 apps, run by a real agent. Five bugs found and fixed: the guard missed checkout steps, two agents could share one phone, the status bar made still screens look changed, hyphenated labels could not be found, and the new phone lock raced with the warm-up thread.
+Measured results for every round are in [HISTORY.md](HISTORY.md) and the README.
