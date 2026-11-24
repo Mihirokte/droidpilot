@@ -101,11 +101,31 @@ def fetch_xml_shell(adb: Adb) -> str:
     raise DeviceError(f"uiautomator dump failed: {raw.strip()[:200]}")
 
 
+STATUS_BAR = (
+    "com.android.systemui:id/status_bar", "com.android.systemui:id/notification_icon_area",
+    "com.android.systemui:id/system_icons", "com.android.systemui:id/clock",
+)
+
+
+def _status_bar_nodes(root: ET.Element) -> set[int]:
+    """ids() of nodes inside the status bar. The clock and icons change every minute,
+    so they would make every observe look changed. The notification shade stays (it is useful)."""
+    skip: set[int] = set()
+    for node in root.iter("node"):
+        rid = node.get("resource-id") or ""
+        if rid.startswith(STATUS_BAR) or rid.endswith(":id/status_bar_container"):
+            skip.update(id(n) for n in node.iter("node"))
+    return skip
+
+
 def parse_ui(xml: str) -> list[UiElement]:
     """Parse a uiautomator XML hierarchy. Keep nodes that are interactive or carry text."""
     root = ET.fromstring(xml)
+    skip = _status_bar_nodes(root)
     elements: list[UiElement] = []
     for node in root.iter("node"):
+        if id(node) in skip:
+            continue
         flags = tuple(
             name
             for name, attr in (

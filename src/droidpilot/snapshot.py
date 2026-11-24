@@ -66,8 +66,11 @@ def _area(e: UiElement) -> int:
 def find(snap: Snapshot, text: str) -> list[UiElement]:
     """Elements whose label contains `text` (case-insensitive). Best matches first:
     exact label, then interactive, then smaller area."""
-    needle = text.casefold().strip().replace("-", " ").replace("_", " ")
-    hits = [e for e in snap.elements if needle in words(e).casefold()]
+    def norm(t: str) -> str:  # same rule on both sides: "Wi-Fi" matches "wi-fi", "wi fi" and an id "wi_fi"
+        return " ".join(t.casefold().replace("-", " ").replace("_", " ").split())
+
+    needle = norm(text)
+    hits = [e for e in snap.elements if needle in norm(words(e))]
     return sorted(
         hits,
         key=lambda e: (label(e).casefold() != needle, not ({"click", "long-click", "edit"} & set(e.flags)), _area(e)),

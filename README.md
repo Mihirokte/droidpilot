@@ -32,7 +32,9 @@ An action returns in about 0.4 seconds. It does not check the screen. The next `
 
 `observe` also wakes and unlocks a phone that has no PIN. If a PIN blocks it, the result starts with `NEEDS_HUMAN`.
 
-A tap on a buy, pay, send or delete button returns `BLOCKED`. The agent must repeat it with `confirm=true`.
+A tap on a buy, checkout, pay, UPI, book, send, post or delete button returns `BLOCKED`. The agent must repeat it with `confirm=true`. "Add to cart" and "Your orders" are allowed.
+
+Only one agent can control a phone at a time. A second droidpilot on the same phone gets an error.
 
 ## How it works
 
@@ -116,6 +118,8 @@ Kiro CLI with Claude Sonnet 5.5 on a realme 9. Each task was one plain sentence.
 
 The first version of droidpilot needed about 27 minutes and 59 calls for the Amazon task, and did not finish it.
 
+More daily tasks for Indian users (Maps, YouTube, Meesho, Calendar, PhonePe, Google Pay and others), what was tested, and what fits: [docs/DAILY_APPS_INDIA.md](docs/DAILY_APPS_INDIA.md). To run a task yourself: `scripts/agent-task.sh <id> "<task>"`.
+
 ## Vision for `look`
 
 `look` tries these in order:
@@ -163,6 +167,7 @@ uv run python tests/e2e_device.py   # needs a phone or an emulator
 
 - [Roadmap: effort, impact, and what we dropped](docs/ROADMAP.md)
 - [Performance numbers](docs/PERFORMANCE.md)
+- [Daily tasks for Indian users](docs/DAILY_APPS_INDIA.md)
 - [Security](SECURITY.md)
 - [Research summary](docs/RESEARCH.md)
 - [Findings log](docs/FINDINGS.md)

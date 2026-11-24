@@ -101,10 +101,20 @@ def test_guard_flags_buying_and_not_cart() -> None:
     assert guard.check("Place your order")
     assert guard.check("Send")
     assert guard.check("Delete account")
-    assert guard.check("Add to cart") is None
-    assert guard.check("Proceed to checkout") is None
-    assert guard.check("Bayer Pay tab") is None  # bare 'pay' is not risky
     assert guard.check(None) is None
+    risky = [
+        "Proceed to Buy (1 item)", "Proceed to checkout", "Checkout", "Place Order", "Pay ₹1,439",
+        "Pay via UPI", "Pay with Google Pay", "Continue to payment", "Book Ticket", "Book Ride", "Send",
+        "Send money", "Post", "Delete", "Log out", "Recharge now", "Confirm booking",
+    ]
+    for label in risky:
+        assert guard.check(label), label
+    safe = [
+        "Add to cart", "Add to Cart | add to cart button", "Save for later", "Go to Cart", "Your Orders",
+        "Track order", "Search Amazon.in", "Settings", "Booking history", "Payday deals ends soon",
+    ]
+    for label in safe:
+        assert guard.check(label) is None, label
 
 
 # ---- store and trace -------------------------------------------------------
@@ -187,3 +197,79 @@ def test_id_only_buttons_are_found_and_guarded() -> None:
     with pytest.raises(Blocked):
         phone._check_guard(*phone.geo.to_view(360, 1000), confirm=False)
     phone._check_guard(*phone.geo.to_view(360, 890), confirm=False)  # add-to-cart is allowed
+
+
+def test_find_matches_hyphenated_labels_and_compacted_segments() -> None:
+    wifi = el(0, "View", "Wi-Fi | A005_5G", ["click"], (0, 0, 500, 100))
+    s = snap(1, [wifi])
+    for q in ("Wi-Fi", "wi fi", "Wi-Fi | A005_5G", "a005 5g"):
+        assert SN.find(s, q) and SN.find(s, q)[0].index == 0, q
+
+
+def test_status_bar_is_dropped_but_app_and_shade_stay() -> None:
+    from droidpilot.perception import parse_ui
+
+    xml = """<hierarchy rotation="0">
+ <node class="android.widget.FrameLayout" package="com.android.systemui" resource-id="com.android.systemui:id/status_bar" bounds="[0,0][1080,80]">
+  <node class="android.widget.TextView" text="11:33" resource-id="com.android.systemui:id/clock" bounds="[10,10][100,70]"/>
+  <node class="android.widget.ImageView" content-desc="Battery 91 percent" bounds="[900,10][1000,70]"/>
+ </node>
+ <node class="android.widget.TextView" package="com.android.systemui" text="Charging notification" resource-id="com.android.systemui:id/notification_text" bounds="[0,100][1080,200]"/>
+ <node class="android.widget.Button" package="com.android.settings" text="Wi-Fi" clickable="true" bounds="[0,300][1080,400]"/>
+</hierarchy>"""
+    labels = [e.text or e.desc for e in parse_ui(xml)]
+    assert labels == ["Charging notification", "Wi-Fi"]
+
+
+def test_second_controller_on_same_phone_is_refused(tmp_path) -> None:
+    import subprocess
+    import sys
+
+
+    from droidpilot.devlock import DeviceLock
+
+    first = DeviceLock("b9a16a4d", tmp_path)
+    first.acquire()
+    other = subprocess.run(  # a separate process, like a second MCP server
+        [sys.executable, "-c", f"from droidpilot.devlock import DeviceLock; from pathlib import Path; DeviceLock('b9a16a4d', Path({str(tmp_path)!r})).acquire(wait_s=0.3)"],
+        capture_output=True, text=True,
+    )
+    assert other.returncode != 0 and "Another droidpilot is controlling this phone" in other.stderr
+    DeviceLock("other-serial", tmp_path).acquire()  # a different phone is fine
+    import threading
+    import time as _time
+
+    threading.Timer(0.5, first.release).start()  # the holder shuts down shortly after
+    t = _time.monotonic()
+    again = DeviceLock("b9a16a4d", tmp_path)
+    again.acquire(wait_s=5)  # waits for the release instead of failing
+    assert 0.3 < _time.monotonic() - t < 3
+    again.release()
+
+
+def test_parallel_connect_in_one_process_does_not_lock_itself_out(tmp_path, monkeypatch) -> None:
+    """The warm-up thread and the first tool call both call connect()."""
+    import threading
+
+    from droidpilot import phone as phone_mod
+    from droidpilot.adb import AdbDevice
+    from droidpilot.devlock import DeviceLock
+
+    monkeypatch.setattr(phone_mod, "list_devices", lambda: [AdbDevice("s1", "device", "")])
+    monkeypatch.setattr(phone_mod, "DeviceLock", lambda serial: DeviceLock(serial, tmp_path))
+    p = phone_mod.Phone()
+    errors: list[Exception] = []
+
+    def go() -> None:
+        try:
+            p.connect()
+        except Exception as exc:  # noqa: BLE001 - collected and asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and p.adb is not None
+    p._lock.release()

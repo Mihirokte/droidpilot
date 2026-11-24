@@ -6,6 +6,7 @@ Imperative shell. The decisions live in pure modules: snapshot, guard, state, pe
 from __future__ import annotations
 
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ from . import scrcpy as S
 from . import snapshot as SN
 from . import state as ST
 from .adb import Adb, Blocked, DeviceError, NeedsHuman, list_devices
+from .devlock import DeviceLock
 from .fasttree import FastTree
 
 KEYCODES = {
@@ -70,18 +72,29 @@ class Phone:
         self._state: ST.DeviceState | None = None
         self._ready_at = 0.0
         self._wakes = 0
+        self._lock: DeviceLock | None = None
+        self._connect_mutex = threading.Lock()  # warm-up and the first tool call both connect
         self.last_tap: tuple[str, int] | None = None  # (text, nth) of the last tapped element, for recording
 
     # ---- connection -------------------------------------------------------
     def connect(self) -> Adb:
         if self.adb:
             return self.adb
+        with self._connect_mutex:
+            if self.adb:  # the other thread finished first
+                return self.adb
+            return self._connect_locked()
+
+    def _connect_locked(self) -> Adb:
         devices = list_devices()
         ready = [d for d in devices if d.state == "device"]
         if self._requested_serial:
             ready = [d for d in ready if d.serial == self._requested_serial]
         if not ready:
             raise DeviceError(self._no_device_hint(devices))
+        lock = DeviceLock(ready[0].serial)
+        lock.acquire()  # raises DeviceError if another droidpilot holds this phone
+        self._lock = lock
         self.adb = Adb(ready[0].serial)
         return self.adb
 
@@ -522,6 +535,8 @@ class Phone:
             self.control.stop()
         if self._fast:
             self._fast.stop()
+        if self._lock:
+            self._lock.release()
 
 
 def _shell_quote(s: str) -> str:

@@ -112,3 +112,7 @@ Findings from these runs, all fixed:
 - No model is bundled. `look` uses the host or an endpoint you choose.
 - No iOS. No wireless adb.
 - The video-packet change signal stays dropped. `observe` is cheap enough.
+
+## Daily-task round (see DAILY_APPS_INDIA.md)
+
+12 tasks over 10 apps, run by a real agent. Five bugs found and fixed: the guard missed checkout steps, two agents could share one phone, the status bar made still screens look changed, hyphenated labels could not be found, and the new phone lock raced with the warm-up thread.
